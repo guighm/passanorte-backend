@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+# Testes e cobertura
+tests/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+# Especificação e infra local
+specs/
+.git/
+.claude/
+.specify/
+.env
+.env.*
+*.log

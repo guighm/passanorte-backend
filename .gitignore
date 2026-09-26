@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Environments
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Test / coverage
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Tooling
+.mypy_cache/
+.ruff_cache/
+uv.lock
+
+# Databases / local data
+*.db
+*.sqlite3
+data/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Spec artifacts
+.specify/
+# Claude Code / specs (local, não versionados)
+.claude/
+specs/

@@ -1,0 +1,110 @@
+services:
+  db:
+    # imagem com a extensão pgvector embutida (D-08, banco passanorte_chatbot)
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: passanorte
+      POSTGRES_PASSWORD: passanorte
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/init-databases.sh:/docker-entrypoint-initdb.d/init-databases.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U passanorte"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  auth:
+    build: { context: ., dockerfile: Dockerfile }
+    command: uvicorn services.auth.app.main:app --host 0.0.0.0 --port 8001
+    ports: ["8001:8001"]
+    environment: &svc_env
+      DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_auth
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      PII_ENCRYPTION_KEY: ${PII_ENCRYPTION_KEY:-}
+      AUTH_SERVICE_URL: http://auth:8001
+      CATALOG_SERVICE_URL: http://catalog:8002
+      VALIDATION_SERVICE_URL: http://validation:8003
+      GAMIFICATION_SERVICE_URL: http://gamification:8004
+      INSIGHTS_SERVICE_URL: http://insights:8005
+      NOTIFICATIONS_SERVICE_URL: http://notifications:8006
+      CHATBOT_SERVICE_URL: http://chatbot:8007
+    depends_on:
+      db: { condition: service_healthy }
+
+  gateway:
+    build: { context: ., dockerfile: Dockerfile }
+    command: uvicorn services.gateway.app.main:app --host 0.0.0.0 --port 8000
+    ports: ["8000:8000"]
+    environment:
+      <<: *svc_env
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
+      GATEWAY_TIMEOUT_S: ${GATEWAY_TIMEOUT_S:-30}
+    depends_on:
+      db: { condition: service_healthy }
+
+  catalog:
+    build: { context: ., dockerfile: Dockerfile }
+    command: uvicorn services.catalog.app.main:app --host 0.0.0.0 --port 8002
+    ports: ["8002:8002"]
+    environment:
+      <<: *svc_env
+      DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_catalog
+    depends_on:
+      db: { condition: service_healthy }
+
+  validation:
+    build: { context: ., dockerfile: Dockerfile }
+    command: uvicorn services.validation.app.main:app --host 0.0.0.0 --port 8003
+    ports: ["8003:8003"]
+    environment:
+      <<: *svc_env
+      DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_validation
+    depends_on:
+      db: { condition: service_healthy }
+
+  gamification:
+    build: { context: ., dockerfile: Dockerfile }
+    command: uvicorn services.gamification.app.main:app --host 0.0.0.0 --port 8004
+    ports: ["8004:8004"]
+    environment:
+      <<: *svc_env
+      DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_gamification
+    depends_on:
+      db: { condition: service_healthy }
+
+  insights:
+    build: { context: ., dockerfile: Dockerfile }
+    command: uvicorn services.insights.app.main:app --host 0.0.0.0 --port 8005
+    ports: ["8005:8005"]
+    environment:
+      <<: *svc_env
+      DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_insights
+    depends_on:
+      db: { condition: service_healthy }
+
+  notifications:
+    build: { context: ., dockerfile: Dockerfile }
+    command: uvicorn services.notifications.app.main:app --host 0.0.0.0 --port 8006
+    ports: ["8006:8006"]
+    environment:
+      <<: *svc_env
+      DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_notifications
+    depends_on:
+      db: { condition: service_healthy }
+
+  chatbot:
+    build: { context: ., dockerfile: Dockerfile }
+    command: uvicorn services.chatbot.app.main:app --host 0.0.0.0 --port 8007
+    ports: ["8007:8007"]
+    environment:
+      <<: *svc_env
+      DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_chatbot
+      LLM_PROVIDER: ${LLM_PROVIDER:-stub}
+    depends_on:
+      db: { condition: service_healthy }
+
+volumes:
+  pgdata:
