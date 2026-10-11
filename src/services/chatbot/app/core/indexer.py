@@ -1,21 +1,23 @@
-"""Gatilho interno de rebuild do índice RAG (catalog → chatbot, D-08) — T063."""
+"""Rebuild do índice RAG consumido do barramento (catalog → chatbot, D-08) — T063.
+
+Função pura com session explícita (testes e o consumer chamam direto);
+delete-then-insert por (source_type, source_id) — idempotente.
+"""
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, Field
 from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
-from services.chatbot.app.core.deps import get_db
-from services.chatbot.app.core.embeddings import get_embedder
 from services.chatbot.app.models.embedding import EmbeddedContent
+from shared.db import service_session_factory
 from shared.logging import log_event
 
-router = APIRouter(tags=["internal"])
-logger = __import__("logging").getLogger("chatbot")
+logger = logging.getLogger("chatbot")
 
 
 class IndexItem(BaseModel):
@@ -32,20 +34,11 @@ class IndexItem(BaseModel):
     schedule_text: str | None = None
 
 
-class IndexRefresh(BaseModel):
-    items: list[IndexItem]
-
-
-@router.post("/internal/index/refresh", status_code=status.HTTP_202_ACCEPTED)
-def refresh_index(
-    payload: IndexRefresh,
-    db: Session = Depends(get_db),
-    embedder=Depends(get_embedder),
-) -> dict:
+def refresh_index_items(db: Session, embedder, items: list[IndexItem]) -> dict:
     """Rebuild idempotente dos embeddings dos itens alterados do catálogo (D-08)."""
-    if not payload.items:
+    if not items:
         return {"indexed": 0}
-    keys = [(item.source_type, item.source_id) for item in payload.items]
+    keys = [(item.source_type, item.source_id) for item in items]
     for source_type, source_id in keys:
         db.execute(
             delete(EmbeddedContent).where(
@@ -55,7 +48,7 @@ def refresh_index(
         )
     db.flush()
     texts = []
-    for item in payload.items:
+    for item in items:
         chunk = f"{item.title}. {item.description}"
         if item.schedule_text:
             chunk += f" Horários: {item.schedule_text}."
@@ -65,7 +58,7 @@ def refresh_index(
             chunk += f" Status: {item.status}."
         texts.append(chunk)
     vectors = embedder(texts)
-    for item, chunk, vector in zip(payload.items, texts, vectors, strict=True):
+    for item, chunk, vector in zip(items, texts, vectors, strict=True):
         occurs = None
         if item.occurs_at:
             occurs = datetime.fromisoformat(item.occurs_at.replace("Z", "+00:00")).replace(tzinfo=None)
@@ -86,5 +79,21 @@ def refresh_index(
             )
         )
     db.commit()
-    log_event(logger, "index_refreshed", count=len(payload.items))
-    return {"indexed": len(payload.items)}
+    log_event(logger, "index_refreshed", count=len(items))
+    return {"indexed": len(items)}
+
+
+def refresh_from_payload(db: Session, payload_data: dict) -> dict:
+    """Converte o `data` do evento `catalog.index.refresh` e refaz o índice."""
+    items = [IndexItem(**item) for item in payload_data.get("items", [])]
+    from services.chatbot.app.core.embeddings import get_embedder
+
+    return refresh_index_items(db, get_embedder(), items)
+
+
+def handle_refresh(data: dict) -> None:
+    db = service_session_factory()()
+    try:
+        refresh_from_payload(db, data)
+    finally:
+        db.close()

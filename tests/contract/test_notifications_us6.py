@@ -1,4 +1,8 @@
-"""T053 [US6] Testes de contrato das notificações (contracts/notifications.md, RF37, D-06)."""
+"""T053 [US6] Testes de contrato das notificações (contracts/notifications.md, RF37, D-06).
+
+O dispatch chega agora pelo barramento AMQP: o contrato do disparo é exercido
+diretamente em `dispatcher.apply_dispatch` (o handler do consumer).
+"""
 
 from __future__ import annotations
 
@@ -11,7 +15,9 @@ os.environ.setdefault("JWT_SECRET", "test-secret-32-bytes-for-hs256-00")
 os.environ.setdefault("PII_ENCRYPTION_KEY", "MgBPF0RbsIxVX4Vi5ZCp0P5ylutyWhnhSeB_9xIrsMY=")
 
 from services.notifications.app.core import deps as notif_deps  # noqa: E402
+from services.notifications.app.core import dispatcher  # noqa: E402
 from services.notifications.app.main import create_test_app as notifications_factory  # noqa: E402
+from shared.errors import ApiError  # noqa: E402
 from shared.security import create_access_token  # noqa: E402
 
 
@@ -42,21 +48,22 @@ def test_subscription_replaces_and_lists(client):
     assert client.get("/api/v1/subscriptions", headers=headers).json()["category_ids"] == ["cat-gastronomia"]
 
 
-def test_dispatch_notifies_only_subscribers(client):
+def test_dispatch_notifies_only_subscribers(client, db_session):
     client.put("/api/v1/subscriptions", json={"category_ids": ["cat-cultura"]}, headers=headers_for("user-1"))
     client.put("/api/v1/subscriptions", json={"category_ids": ["cat-natureza"]}, headers=headers_for("user-2"))
 
-    dispatch = {
-        "kind": "new_event",
-        "source_id": "evt-1",
-        "category_id": "cat-cultura",
-        "title": "Festival de Verão",
-        "body": "Novo evento no Teatro Amazonas",
-        "payload": {"event_id": "evt-1"},
-    }
-    resp = client.post("/api/v1/internal/dispatch", json=dispatch)
-    assert resp.status_code == 202, resp.text
-    assert resp.json()["notified"] == 1  # SC-008: só o inscrito recebe
+    result = dispatcher.apply_dispatch(
+        db_session,
+        {
+            "kind": "new_event",
+            "source_id": "evt-1",
+            "category_id": "cat-cultura",
+            "title": "Festival de Verão",
+            "body": "Novo evento no Teatro Amazonas",
+            "payload": {"event_id": "evt-1"},
+        },
+    )
+    assert result == {"notified": 1}  # SC-008: só o inscrito recebe
 
     inbox = client.get("/api/v1/notifications", headers=headers_for("user-1")).json()["items"]
     assert len(inbox) == 1
@@ -65,44 +72,55 @@ def test_dispatch_notifies_only_subscribers(client):
     assert client.get("/api/v1/notifications", headers=headers_for("user-2")).json()["items"] == []
 
 
-def test_dispatch_without_subscribers_is_noop(client):
-    resp = client.post(
-        "/api/v1/internal/dispatch",
-        json={"kind": "new_spot", "source_id": "s1", "category_id": "cat-x", "title": "T", "body": "B"},
+def test_dispatch_without_subscribers_is_noop(db_session):
+    result = dispatcher.apply_dispatch(
+        db_session,
+        {"kind": "new_spot", "source_id": "s1", "category_id": "cat-x", "title": "T", "body": "B"},
     )
-    assert resp.status_code == 202
-    assert resp.json()["notified"] == 0
+    assert result == {"notified": 0}
 
 
-def test_dispatch_retry_is_idempotent(client):
+def test_dispatch_invalid_kind_is_rejected(db_session):
+    with pytest.raises(ApiError) as exc_info:
+        dispatcher.apply_dispatch(
+            db_session,
+            {"kind": "kind_fake", "source_id": "s-1", "category_id": "cat-x", "title": "T"},
+        )
+    assert exc_info.value.status_code == 422
+
+
+def test_dispatch_retry_is_idempotent(client, db_session):
     client.put("/api/v1/subscriptions", json={"category_ids": ["cat-cultura"]}, headers=headers_for("user-1"))
 
     dispatch = {"kind": "new_event", "source_id": "evt-9", "category_id": "cat-cultura", "title": "T", "body": "B"}
-    first = client.post("/api/v1/internal/dispatch", json=dispatch)
-    second = client.post("/api/v1/internal/dispatch", json=dispatch)
-    assert first.json()["notified"] == 1
-    assert second.json()["notified"] == 0  # idempotente por (kind, source_id) (D-05)
+    first = dispatcher.apply_dispatch(db_session, dispatch)
+    second = dispatcher.apply_dispatch(db_session, dispatch)  # redelivery do broker
+    assert first == {"notified": 1}
+    assert second == {"notified": 0}  # idempotente por (kind, source_id) (D-05)
 
 
-def test_dispatch_direct_user_notification(client):
+def test_dispatch_direct_user_notification(client, db_session):
     """user_ids diretos: conclusão de rota no gamification (RF35) sem categoria."""
-    resp = client.post(
-        "/api/v1/internal/dispatch",
-        json={"kind": "new_route", "source_id": "r-1", "user_ids": ["user-9"],
-              "title": "Rota concluída", "body": "Seu código: PN-XYZ"},
+    result = dispatcher.apply_dispatch(
+        db_session,
+        {
+            "kind": "new_route",
+            "source_id": "r-1",
+            "user_ids": ["user-9"],
+            "title": "Rota concluída",
+            "body": "Seu código: PN-XYZ",
+        },
     )
-    assert resp.status_code == 202
-    assert resp.json()["notified"] == 1
+    assert result == {"notified": 1}
     inbox = client.get("/api/v1/notifications", headers=headers_for("user-9")).json()["items"]
     assert len(inbox) == 1
 
 
-def test_mark_notification_read(client):
+def test_mark_notification_read(client, db_session):
     client.put("/api/v1/subscriptions", json={"category_ids": ["cat-cultura"]}, headers=headers_for("user-1"))
-    client.post(
-        "/api/v1/internal/dispatch",
-        json={"kind": "new_route", "source_id": "r-1", "category_id": "cat-cultura",
-              "title": "Nova rota", "body": "B"},
+    dispatcher.apply_dispatch(
+        db_session,
+        {"kind": "new_route", "source_id": "r-1", "category_id": "cat-cultura", "title": "Nova rota", "body": "B"},
     )
     notif_id = client.get("/api/v1/notifications", headers=headers_for("user-1")).json()["items"][0]["id"]
 

@@ -19,11 +19,11 @@ Docs interativos: `http://localhost:8003/docs` (OpenAPI em `/openapi.json`).
 | POST | `/visits` | JWT (service exige role `tourist` → 403 para os demais; a borda Kong exige apenas JWT (papel decidido no serviço)) | registra visita: 201 validada / 200 idempotente / 422 rejeitada / 422 `gps_unavailable` / 503 `catalog_unavailable` |
 | GET | `/visits` | JWT (qualquer papel) | lista só as visitas `validated` do usuário (`{"items", "total"}`) |
 | GET | `/visits/{spot_id}` | JWT (qualquer papel) | visita validada do usuário para o ponto; 404 se não existir |
-| POST | `/internal/visits/propagate` | nenhuma (rota interna) | re-propaga um fato de visita; idempotente nos destinos |
+| POST | `/internal/visits/propagate` | nenhuma (rota interna) | re-propaga um fato de visita; idempotente no insights |
 
-## Propagação (D-05)
+## Propagação (D-05, via RabbitMQ)
 
-Na primeira validação, propaga fire-and-forget para `POST /api/v1/internal/visit-facts` (insights) e `POST /api/v1/internal/visit-notification` (gamification), payload `{user_id, tourist_spot_id, occurred_at}`. Até **2 tentativas** por destino (timeout 5s; 5xx e erros de rede são retentados), com log estruturado `visit_propagated` indicando sucesso por destino. Falha nunca invalida a visita.
+Na primeira validação, publica o evento `visit.validated` (routing key no exchange topic `passanorte.events`) com payload `{user_id, tourist_spot_id, occurred_at, ...}`. O consumer do insights entrega o fato com requeue/DLQ (tolerância a falhas do broker); a publicação é fire-and-forget (falha nunca invalida a visita). Sem `RABBITMQ_URL` (dev sem docker), a publicação vira no-op com um warn único.
 
 ## Variáveis de ambiente
 

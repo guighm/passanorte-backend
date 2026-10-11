@@ -1,11 +1,14 @@
-"""Disparo de notificações — fire-and-forget, falha é tolerada (D-05, RF37)."""
+"""Disparo de notificações — evento no RabbitMQ, entrega tolerante a falhas (D-05, RF37).
+
+Mantém a assinatura do antigo HTTP fire-and-forget: os call sites (gamification
+e catalog) não mudam; as falhas de publicação são logadas, nunca levantadas.
+"""
 
 from __future__ import annotations
 
 import logging
-import os
 
-import httpx
+from shared import messaging
 
 logger = logging.getLogger("notifications_client")
 
@@ -20,8 +23,7 @@ def dispatch(
     user_ids: list[str] | None = None,
     payload: dict | None = None,
 ) -> None:
-    """Dispara notificações no serviço notifications (idempotente no alvo)."""
-    base_url = os.environ.get("NOTIFICATIONS_SERVICE_URL", "http://localhost:8006")
+    """Publica um evento `notification.dispatch` por alvo (idempotente no consumer)."""
     for category_id in category_ids or [None]:
         message: dict = {
             "kind": kind,
@@ -34,7 +36,4 @@ def dispatch(
             message["category_id"] = category_id
         if user_ids:
             message["user_ids"] = user_ids
-        try:
-            httpx.post(f"{base_url}/api/v1/internal/dispatch", json=message, timeout=5.0)
-        except httpx.HTTPError:
-            pass  # tolerante a falhas: o cadastro não bloqueia (D-05)
+        messaging.publish("notification.dispatch", message)

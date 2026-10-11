@@ -11,31 +11,28 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.pool import StaticPool
 
 os.environ.setdefault("JWT_SECRET", "test-secret-32-bytes-for-hs256-00")
 os.environ.setdefault("PII_ENCRYPTION_KEY", "MgBPF0RbsIxVX4Vi5ZCp0P5ylutyWhnhSeB_9xIrsMY=")
 
 from services.insights.app.core import deps as insights_deps  # noqa: E402
 from services.insights.app.main import create_test_app as insights_factory  # noqa: E402
-from shared.db import Base, make_session_factory  # noqa: E402
 from shared.security import create_access_token  # noqa: E402
 
 
 @pytest.fixture
-def client():
-    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-    Base.metadata.create_all(engine)
+def client(db_session):
     app = insights_factory()
-    app.dependency_overrides[insights_deps.get_db] = lambda: make_session_factory(engine)()
+    app.dependency_overrides[insights_deps.get_db] = lambda: db_session
     return TestClient(app)
 
 
-def test_us5_dashboard_five_views(client):
+def test_us5_dashboard_five_views(client, db_session):
+    from services.insights.app.core import handlers
+
     # acesso do turista no login/listagem propagado ao insights (D-05, RF07)
-    client.post("/api/v1/internal/accesses", json={"user_id": "u1", "client": "mobile"})
-    client.post("/api/v1/internal/accesses", json={"user_id": "u2", "client": "web"})
+    handlers.ingest_access(db_session, {"user_id": "u1", "client": "mobile"})
+    handlers.ingest_access(db_session, {"user_id": "u2", "client": "web"})
 
     # fatos de visita com snapshot de país/interesses (LGPD, RNF08)
     now = datetime.now(UTC)
@@ -44,13 +41,17 @@ def test_us5_dashboard_five_views(client):
         ("u2", "spot-a", "Portugal", ["cultura", "natureza"]),
         ("u3", "spot-b", "Brasil", ["natureza"]),
     ]:
-        resp = client.post(
-            "/api/v1/internal/visit-facts",
-            json={"user_id": user, "tourist_spot_id": spot, "region_hint": "Centro",
-                  "occurred_at": (now - timedelta(days=1)).isoformat(),
-                  "country_of_origin": country, "interests": interests},
+        handlers.ingest_visit_fact(
+            db_session,
+            {
+                "user_id": user,
+                "tourist_spot_id": spot,
+                "region_hint": "Centro",
+                "occurred_at": (now - timedelta(days=1)).isoformat(),
+                "country_of_origin": country,
+                "interests": interests,
+            },
         )
-        assert resp.status_code == 201, resp.text
 
     token, _ = create_access_token("admin-1", "admin")
     admin = {"Authorization": f"Bearer {token}"}

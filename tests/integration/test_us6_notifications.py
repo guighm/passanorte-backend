@@ -2,13 +2,14 @@
 
 Catalog cria ponto/evento → inscritos na categoria recebem notificação;
 gamification conclui rota → turista recebe código por notificação.
+O barramento AMQP é simulado: `events` captura as publicações e `replay`
+entrega-as ao handler do notifications ("fast-forward do broker").
 """
 
 from __future__ import annotations
 
 import os
 
-import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -25,7 +26,7 @@ from shared.security import create_access_token  # noqa: E402
 
 
 @pytest.fixture
-def services(db_session, monkeypatch):
+def services(db_session, replay):
     apps = {}
     for name, factory, deps_mod in [
         ("auth", auth_factory, auth_deps),
@@ -36,15 +37,6 @@ def services(db_session, monkeypatch):
         app.dependency_overrides[deps_mod.get_db] = lambda: db_session
         apps[name] = TestClient(app)
 
-    # roteia chamadas httpx de dispatch ao TestClient do notifications (D-05)
-    notif_client = apps["notifications"]
-
-    def fake_post(url, json=None, timeout=None, **kwargs):
-        path = "/" + url.split("://", 1)[1].split("/", 1)[1]
-        return notif_client.post(path, json=json)
-
-    monkeypatch.setattr(httpx, "post", fake_post)
-
     def auth_headers(user_id, role="tourist"):
         token, _ = create_access_token(user_id, role)
         return {"Authorization": f"Bearer {token}"}
@@ -52,7 +44,7 @@ def services(db_session, monkeypatch):
     return apps, auth_headers
 
 
-def test_us6_notification_flow(services):
+def test_us6_notification_flow(services, replay, db_session):
     apps, auth_headers = services
     catalog, notif = apps["catalog"], apps["notifications"]
     admin = auth_headers("admin-1", "admin")
@@ -73,6 +65,8 @@ def test_us6_notification_flow(services):
     assert resp.status_code == 201, resp.text
     spot_id = resp.json()["id"]
 
+    # evento `notification.dispatch` (new_spot) publicado e consumido
+    replay("notifications", db_session)
     inbox_1 = notif.get("/api/v1/notifications", headers=auth_headers("user-1")).json()["items"]
     assert len(inbox_1) == 1
     assert inbox_1[0]["kind"] == "new_spot"
@@ -86,6 +80,7 @@ def test_us6_notification_flow(services):
               "occurs_at": "2026-10-01T20:00:00", "ticket_price": 25.0},
     )
     assert resp.status_code == 201, resp.text
+    replay("notifications", db_session)
     inbox_1 = notif.get("/api/v1/notifications", headers=auth_headers("user-1")).json()["items"]
     assert len(inbox_1) == 2
     assert inbox_1[0]["kind"] == "new_event"  # ordenado por created_at desc
@@ -96,19 +91,13 @@ def test_us6_notification_flow(services):
     assert resp.json()["read_at"] is not None
 
 
-def test_gamification_completion_notifies_tourist(db_session, monkeypatch):
+def test_gamification_completion_notifies_tourist(db_session, replay):
     from services.gamification.app.core import completion as completion_mod
     from services.notifications.app.core import deps as notif_deps
 
     notif_app = notif_factory()
     notif_app.dependency_overrides[notif_deps.get_db] = lambda: db_session
     notif = TestClient(notif_app)
-
-    def fake_post(url, json=None, timeout=None, **kwargs):
-        path = "/" + url.split("://", 1)[1].split("/", 1)[1]
-        return notif.post(path, json=json)
-
-    monkeypatch.setattr(httpx, "post", fake_post)
 
     from services.gamification.app.models.route import Prize
 
@@ -117,6 +106,8 @@ def test_gamification_completion_notifies_tourist(db_session, monkeypatch):
     db_session.flush()
 
     completion_mod.complete_route(db_session, user_id="user-1", route_id="r-1", prize_id=prize.id)
+
+    replay("notifications", db_session)
 
     token, _ = create_access_token("user-1", "tourist")
     inbox = notif.get(

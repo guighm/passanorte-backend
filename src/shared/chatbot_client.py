@@ -1,19 +1,18 @@
-"""Gatilho de rebuild do índice RAG do chatbot — fire-and-forget (D-05)."""
+"""Gatilho de rebuild do índice RAG do chatbot — evento no RabbitMQ (D-05).
+
+Mantém a assinatura do antigo HTTP fire-and-forget: os call sites (catalog)
+não mudam; o consumer no chatbot re-embeda de forma idempotente.
+"""
 
 from __future__ import annotations
 
 import logging
-import os
 
-import httpx
+from shared import messaging
 
 logger = logging.getLogger("chatbot_client")
 
 
 def refresh_index(items: list[dict]) -> None:
-    """Reenvia itens alterados do catálogo ao chatbot (idempotente no alvo)."""
-    base_url = os.environ.get("CHATBOT_SERVICE_URL", "http://localhost:8007")
-    try:
-        httpx.post(f"{base_url}/api/v1/internal/index/refresh", json={"items": items}, timeout=10.0)
-    except httpx.HTTPError:
-        pass  # tolerante a falhas: o cadastro não bloqueia (D-05)
+    """Publica um evento `catalog.index.refresh` (idempotente no consumer)."""
+    messaging.publish("catalog.index.refresh", {"items": items})

@@ -1,6 +1,8 @@
 """T048 [US5] Testes de contrato do dashboard (contracts/insights.md, RF06–RF10).
 
 Cinco visões sobre um dataset conhecido; todos os endpoints exigem role=admin.
+O ingest de fatos/acessos é por handlers do consumer (`ingest_*`), exatamente
+como o barramento AMQP entrega os eventos `visit.validated`/`access.registered`.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("JWT_SECRET", "test-secret-32-bytes-for-hs256-00")
 os.environ.setdefault("PII_ENCRYPTION_KEY", "MgBPF0RbsIxVX4Vi5ZCp0P5ylutyWhnhSeB_9xIrsMY=")
 
+from services.insights.app.core import deps as insights_deps  # noqa: E402
 from services.insights.app.main import create_test_app as insights_factory  # noqa: E402
 from shared.security import create_access_token  # noqa: E402
 
@@ -23,23 +26,15 @@ def admin_headers() -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-def ingest(client, **fact):
-    resp = client.post("/api/v1/internal/visit-facts", json=fact)
-    assert resp.status_code == 201, resp.text
-
-
 @pytest.fixture
 def client(db_session):
     app = insights_factory()
-    app.dependency_overrides[app_state["get_db"]] = lambda: db_session
+    app.dependency_overrides[insights_deps.get_db] = lambda: db_session
     return TestClient(app)
 
 
-app_state: dict = {}
-
-
 def test_dashboard_views_with_known_dataset(db_session):
-    from services.insights.app.core import deps as insights_deps
+    from services.insights.app.core import handlers
 
     app = insights_factory()
     app.dependency_overrides[insights_deps.get_db] = lambda: db_session
@@ -49,18 +44,35 @@ def test_dashboard_views_with_known_dataset(db_session):
     # interesses cultura/natureza, 2 acessos
     now = datetime.now(UTC)
     base = {"country_of_origin": "Brasil", "interests": ["cultura"]}
-    ingest(client, user_id="u1", tourist_spot_id="spot-a", region_hint="Centro",
-           occurred_at=now.isoformat(), **base)
-    ingest(client, user_id="u2", tourist_spot_id="spot-a", region_hint="Centro",
-           occurred_at=(now - timedelta(days=3)).isoformat(), country_of_origin="Brasil",
-           interests=["natureza"])
-    ingest(client, user_id="u3", tourist_spot_id="spot-b", region_hint="Zona Leste",
-           occurred_at=(now - timedelta(days=40)).isoformat(), country_of_origin="Portugal",
-           interests=["cultura"])
+    handlers.ingest_visit_fact(
+        db_session,
+        {"user_id": "u1", "tourist_spot_id": "spot-a", "region_hint": "Centro", "occurred_at": now.isoformat(), **base},
+    )
+    handlers.ingest_visit_fact(
+        db_session,
+        {
+            "user_id": "u2",
+            "tourist_spot_id": "spot-a",
+            "region_hint": "Centro",
+            "occurred_at": (now - timedelta(days=3)).isoformat(),
+            "country_of_origin": "Brasil",
+            "interests": ["natureza"],
+        },
+    )
+    handlers.ingest_visit_fact(
+        db_session,
+        {
+            "user_id": "u3",
+            "tourist_spot_id": "spot-b",
+            "region_hint": "Zona Leste",
+            "occurred_at": (now - timedelta(days=40)).isoformat(),
+            "country_of_origin": "Portugal",
+            "interests": ["cultura"],
+        },
+    )
 
     for _ in range(2):
-        resp = client.post("/api/v1/internal/accesses", json={"user_id": "u1", "client": "mobile"})
-        assert resp.status_code == 201
+        handlers.ingest_access(db_session, {"user_id": "u1", "client": "mobile"})
 
     headers = admin_headers()
 
@@ -100,7 +112,9 @@ def test_dashboard_views_with_known_dataset(db_session):
     assert client.get("/api/v1/heatmap").status_code == 401
 
     # idempotência do ingest (D-05): repetir o fato não duplica
-    ingest(client, user_id="u1", tourist_spot_id="spot-a", region_hint="Centro",
-           occurred_at=now.isoformat(), **base)
+    handlers.ingest_visit_fact(
+        db_session,
+        {"user_id": "u1", "tourist_spot_id": "spot-a", "region_hint": "Centro", "occurred_at": now.isoformat(), **base},
+    )
     heatmap = client.get("/api/v1/heatmap", headers=headers).json()
     assert {row["tourist_spot_id"]: row["visit_count"] for row in heatmap["items"]}["spot-a"] == 2

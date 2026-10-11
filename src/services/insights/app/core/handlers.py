@@ -1,18 +1,20 @@
-"""Ingest interno de fatos (validation/auth → insights, D-05) — T050."""
+"""Ingestão de fatos consumidos do barramento (validation/auth → insights, D-05) — T050.
+
+Funções puras com session explícita (testes e consumers chamam direto;
+os handlers AMQP em `handle_*` abrem a sessão cacheada por processo).
+"""
 
 from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
-from services.insights.app.core.deps import get_db
 from services.insights.app.models.facts import AccessLog, VisitFact
+from shared.db import service_session_factory
 from shared.logging import log_event
 
-router = APIRouter(tags=["internal"])
 logger = logging.getLogger("insights")
 
 
@@ -22,8 +24,7 @@ def _parse_ts(value: str | None) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-@router.post("/internal/visit-facts", status_code=status.HTTP_201_CREATED)
-def ingest_visit_fact(payload: dict, db: Session = Depends(get_db)) -> dict:
+def ingest_visit_fact(db: Session, payload: dict) -> dict:
     """Ingest idempotente de fato de visita (D-05): dedup por (user, spot, momento)."""
     occurred_at = _parse_ts(payload.get("occurred_at"))
     existing = (
@@ -55,11 +56,26 @@ def ingest_visit_fact(payload: dict, db: Session = Depends(get_db)) -> dict:
     return {"id": fact.id, "status": "ingested"}
 
 
-@router.post("/internal/accesses", status_code=status.HTTP_201_CREATED)
-def ingest_access(payload: dict, db: Session = Depends(get_db)) -> dict:
+def ingest_access(db: Session, payload: dict) -> dict:
     """Registro de acesso à aplicação (RF07)."""
     access = AccessLog(user_id=payload["user_id"], client=payload.get("client"))
     db.add(access)
     db.commit()
     log_event(logger, "access_ingested", user_id=payload["user_id"])
     return {"id": access.id, "status": "ingested"}
+
+
+def handle_visit_fact(data: dict) -> None:
+    _consume(ingest_visit_fact, data)
+
+
+def handle_access(data: dict) -> None:
+    _consume(ingest_access, data)
+
+
+def _consume(ingest_fn, data: dict) -> None:
+    db = service_session_factory()()
+    try:
+        ingest_fn(db, data)
+    finally:
+        db.close()

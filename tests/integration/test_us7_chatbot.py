@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("JWT_SECRET", "test-secret-32-bytes-for-hs256-00")
 
 from services.chatbot.app.core import deps as chatbot_deps  # noqa: E402
+from services.chatbot.app.core import indexer  # noqa: E402
 from services.chatbot.app.core.embeddings import _stub_embed  # noqa: E402
 from services.chatbot.app.core.provider import StubProvider  # noqa: E402
 from services.chatbot.app.main import create_test_app  # noqa: E402
@@ -35,11 +36,10 @@ def _headers(user_id="user-1"):
     return {"Authorization": f"Bearer {token}"}
 
 
-def _index_catalog(client):
-    """Índice com o conteúdo do catálogo — exatamente o que o catalog dispara (D-08)."""
-    resp = client.post(
-        "/api/v1/internal/index/refresh",
-        json={"items": [
+def _index_catalog(client, db_session):
+    """Índice com o conteúdo do catálogo — exatamente o que o catalog publica no barramento (D-08)."""
+    data = {
+        "items": [
             {
                 "source_type": "tourist_spot",
                 "source_id": "s-teatro",
@@ -71,15 +71,14 @@ def _index_catalog(client):
                 "latitude": -3.49,
                 "longitude": -60.01,
             },
-        ]},
-    )
-    assert resp.status_code == 202, resp.text
-    assert resp.json()["indexed"] == 3
+        ]
+    }
+    assert indexer.refresh_from_payload(db_session, data) == {"indexed": 3}
 
 
-def test_planning_conversation_uses_only_catalog_content(client):
+def test_planning_conversation_uses_only_catalog_content(client, db_session):
     conversation_id = client.post("/api/v1/conversations", headers=_headers()).json()["id"]
-    _index_catalog(client)
+    _index_catalog(client, db_session)
 
     resp = client.post(
         f"/api/v1/conversations/{conversation_id}/messages",

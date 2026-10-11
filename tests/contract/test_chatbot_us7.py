@@ -11,6 +11,7 @@ os.environ.setdefault("JWT_SECRET", "test-secret-32-bytes-for-hs256-00")
 
 from services.chatbot.app.core import deps as chatbot_deps  # noqa: E402
 from services.chatbot.app.core.embeddings import _stub_embed  # noqa: E402
+from services.chatbot.app.core.indexer import IndexItem, refresh_index_items  # noqa: E402
 from services.chatbot.app.main import create_test_app  # noqa: E402
 from shared.security import create_access_token  # noqa: E402
 
@@ -40,34 +41,34 @@ def test_conversation_lifecycle_and_message(client, db_session):
     assert resp.status_code == 201, resp.text
     conversation_id = resp.json()["id"]
 
-    # índice com conteúdo do catálogo (como o catalog enviaria via /internal/index/refresh)
-    resp = client.post(
-        "/api/v1/internal/index/refresh",
-        json={"items": [
-            {
-                "source_type": "tourist_spot",
-                "source_id": "s-1",
-                "title": "Teatro Amazonas",
-                "description": "Teatro histórico, ingresso R$ 50, abre 09h-17h",
-                "status": "open",
-                "latitude": -3.47,
-                "longitude": -60.02,
-                "ticket_price": 50.0,
-                "schedule_text": "seg-dom 09:00-17:00",
-            },
-            {
-                "source_type": "tourist_spot",
-                "source_id": "s-closed",
-                "title": "Cine Rex",
-                "description": "Cinema antigo fechado",
-                "status": "permanently_closed",
-                "latitude": -3.48,
-                "longitude": -60.01,
-            },
-        ]},
+    # índice com conteúdo do catálogo (como o catalog publicaria via barramento AMQP)
+    indexed = refresh_index_items(
+        db_session,
+        _stub_embed,
+        [
+            IndexItem(
+                source_type="tourist_spot",
+                source_id="s-1",
+                title="Teatro Amazonas",
+                description="Teatro histórico, ingresso R$ 50, abre 09h-17h",
+                status="open",
+                latitude=-3.47,
+                longitude=-60.02,
+                ticket_price=50.0,
+                schedule_text="seg-dom 09:00-17:00",
+            ),
+            IndexItem(
+                source_type="tourist_spot",
+                source_id="s-closed",
+                title="Cine Rex",
+                description="Cinema antigo fechado",
+                status="permanently_closed",
+                latitude=-3.48,
+                longitude=-60.01,
+            ),
+        ],
     )
-    assert resp.status_code == 202, resp.text
-    assert resp.json()["indexed"] == 2
+    assert indexed == {"indexed": 2}
 
     resp = client.post(
         f"/api/v1/conversations/{conversation_id}/messages",
@@ -97,14 +98,16 @@ def test_conversation_lifecycle_and_message(client, db_session):
     assert resp.status_code == 404
 
 
-def test_index_refresh_is_idempotent(client):
-    payload = {"items": [{
-        "source_type": "event",
-        "source_id": "e-1",
-        "title": "Festival",
-        "description": "evento no Teatro",
-        "status": "open",
-        "ticket_price": 10.0,
-    }]}
-    assert client.post("/api/v1/internal/index/refresh", json=payload).json()["indexed"] == 1
-    assert client.post("/api/v1/internal/index/refresh", json=payload).json()["indexed"] == 1
+def test_index_refresh_is_idempotent(client, db_session):
+    items = [
+        IndexItem(
+            source_type="event",
+            source_id="e-1",
+            title="Festival",
+            description="evento no Teatro",
+            status="open",
+            ticket_price=10.0,
+        )
+    ]
+    assert refresh_index_items(db_session, _stub_embed, items) == {"indexed": 1}
+    assert refresh_index_items(db_session, _stub_embed, items) == {"indexed": 1}

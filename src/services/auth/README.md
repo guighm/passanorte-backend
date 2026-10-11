@@ -49,7 +49,7 @@ Docs interativos: `http://localhost:8001/docs` (OpenAPI em `/openapi.json`).
 | `JWT_SECRET` | assinatura HS256 dos tokens | default de desenvolvimento |
 | `PII_ENCRYPTION_KEY` | chave Fernet do PII **e** do HMAC de unicidade; se definida mas vazia, a importação falha — sem ela, é gerada uma chave efêmera por processo (dados criptografados ficam irrecuperáveis em restart) | efêmera |
 | `ACCESS_TOKEN_MINUTES` / `REFRESH_TOKEN_DAYS` | validade dos tokens | `15` / `7` |
-| `INSIGHTS_SERVICE_URL` | log de acessos no login (RF07, fire-and-forget, 1 tentativa) | `http://localhost:8005` |
+| `RABBITMQ_URL` | log de acessos no login (RF07): publica `access.registered` no barramento | vazio → degradado (publica nada) |
 
 ## Estrutura e notas de implementação
 

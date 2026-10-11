@@ -1,6 +1,6 @@
 # Serviço de Catálogo (RF11–RF17, RF26–RF29)
 
-Catálogo de pontos turísticos, categorias e eventos: leitura pública (detalhe, horários, eventos, deep links para mapas/transporte, ordenação por proximidade) e CRUD administrativo com validações de negócio (janela de horário sem sobreposição, `permanently_closed` terminal, remoção lógica de pontos). Após mutações, dispara fire-and-forget: dispatch de notificações por categoria (RF37) e rebuild do índice do chatbot (D-08). Registra acessos no insights quando a listagem pública vem com JWT válido (RF07).
+Catálogo de pontos turísticos, categorias e eventos: leitura pública (detalhe, horários, eventos, deep links para mapas/transporte, ordenação por proximidade) e CRUD administrativo com validações de negócio (janela de horário sem sobreposição, `permanently_closed` terminal, remoção lógica de pontos). Após mutações, publica eventos no barramento RabbitMQ: `notification.dispatch` por categoria (RF37) e `catalog.index.refresh` p/ rebuild do índice do chatbot (D-08). Registra acessos no insights quando a listagem pública vem com JWT válido (RF07).
 
 ## Como rodar
 

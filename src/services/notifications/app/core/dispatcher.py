@@ -1,30 +1,29 @@
-"""Disparo interno de notificações (catalog/gamification → notifications, D-05) — T056."""
+"""Disparo de notificações consumido do barramento (catalog/gamification → notifications) — T056.
+
+Função pura com session explícita (testes e o consumer chamam direto).
+"""
 
 from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
-from services.notifications.app.core.deps import get_db
 from services.notifications.app.models.notification import Notification, NotificationSubscription
+from shared.db import service_session_factory
+from shared.errors import ApiError
 from shared.logging import log_event
 
-router = APIRouter(tags=["internal"])
 logger = logging.getLogger("notifications")
 
 KINDS = ("new_event", "new_spot", "new_route")
 
 
-@router.post("/internal/dispatch", status_code=status.HTTP_202_ACCEPTED)
-def dispatch(payload: dict, db: Session = Depends(get_db)) -> dict:
+def apply_dispatch(db: Session, payload: dict) -> dict:
     """Disparo fire-and-forget (D-05): notifica inscritos da categoria ou usuários
     diretos; idempotente por (user, kind, source_id); sem inscritos → no-op (RF37)."""
     kind = payload["kind"]
     if kind not in KINDS:
-        from shared.errors import ApiError
-
         raise ApiError(code="invalid_kind", message="Tipo de notificação inválido.", status_code=422)
     source_id = payload["source_id"]
 
@@ -33,10 +32,12 @@ def dispatch(payload: dict, db: Session = Depends(get_db)) -> dict:
         category_id = None
     elif payload.get("category_id"):
         category_id = payload["category_id"]
-        targets = [row.user_id for row in
-                   db.query(NotificationSubscription)
-                   .filter(NotificationSubscription.category_id == category_id)
-                   .all()]
+        targets = [
+            row.user_id
+            for row in db.query(NotificationSubscription)
+            .filter(NotificationSubscription.category_id == category_id)
+            .all()
+        ]
     else:
         return {"notified": 0}
 
@@ -44,8 +45,7 @@ def dispatch(payload: dict, db: Session = Depends(get_db)) -> dict:
     for user_id in targets:
         existing = (
             db.query(Notification)
-            .filter(Notification.user_id == user_id, Notification.kind == kind,
-                    Notification.source_id == source_id)
+            .filter(Notification.user_id == user_id, Notification.kind == kind, Notification.source_id == source_id)
             .first()
         )
         if existing is not None:
@@ -65,3 +65,11 @@ def dispatch(payload: dict, db: Session = Depends(get_db)) -> dict:
     db.commit()
     log_event(logger, "dispatch_done", kind=kind, source_id=source_id, notified=notified)
     return {"notified": notified}
+
+
+def handle_dispatch(data: dict) -> None:
+    db = service_session_factory()()
+    try:
+        apply_dispatch(db, data)
+    finally:
+        db.close()

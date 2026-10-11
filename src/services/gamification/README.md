@@ -48,7 +48,7 @@ Docs interativos: `http://localhost:8004/docs` (OpenAPI em `/openapi.json`).
 | `DATABASE_URL` | banco `passanorte_gamification` | sem env: `sqlite:///./dev.db` |
 | `JWT_SECRET` | validação dos tokens | default de desenvolvimento |
 | `VALIDATION_SERVICE_URL` | `GET /api/v1/visits` com o Bearer do turista repassado verbatim (D-02), timeout 5s, sem retry | `http://localhost:8003` |
-| `NOTIFICATIONS_SERVICE_URL` | dispatch de conclusão (fire-and-forget) | `http://localhost:8006` |
+| `RABBITMQ_URL` | dispatch de conclusão (RF35): publica `notification.dispatch` no barramento | vazio → degradado (publica nada) |
 
 ## Estrutura e notas de implementação
 

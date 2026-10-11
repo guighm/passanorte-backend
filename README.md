@@ -4,17 +4,18 @@ Backend do sistema distribuído de gamificação do turismo de Manaus: turistas 
 
 > Cada serviço tem seu próprio `README.md` em `src/services/<serviço>/`, com endpoints, comandos, variáveis de ambiente e notas de implementação.
 
-**Stack:** Python 3.11+ · FastAPI · SQLAlchemy 2.x · Alembic · PostgreSQL 16 (pgvector) · httpx · JWT HS256 · bcrypt · Fernet · uv · Kong Gateway (DB-less) · Docker Compose
+**Stack:** Python 3.11+ · FastAPI · SQLAlchemy 2.x · Alembic · PostgreSQL 16 (pgvector) · aio-pika (RabbitMQ) · httpx (pull) · JWT HS256 · bcrypt · Fernet · uv · Kong Gateway (DB-less) · Docker Compose
 
 ---
 
 ## Arquitetura em uma página
 
-Kong Gateway na borda (porta 8000, config declarativa DB-less em `kong/kong.yml`) + 7 microsserviços + 1 banco por serviço (Princípio I — a query nunca sai do banco próprio), comunicação REST síncrona (httpx, fire-and-forget tolerante a falhas — a propagação de visitas usa retry idempotente de 2 tentativas) e um `src/shared/` de biblioteca interna (não é um serviço). Sem broker, Redis ou cloud — infraestrutura inteira em Docker Compose, custo zero.
+Kong Gateway na borda (porta 8000, config declarativa DB-less em `kong/kong.yml`) + 7 microsserviços + 1 banco por serviço (Princípio I — a query nunca sai do banco próprio), comunicação **REST síncrona (httpx) para consultas pull** e **RabbitMQ (aio-pika) como barramento de eventos** para os efeitos colaterais tolerantes a falhas (D-05), mais um `src/shared/` de biblioteca interna (não é um serviço). Infraestrutura inteira em Docker Compose, custo zero.
 
 | Componente | Porta | Responsabilidade |
 |---|---|---|
 | [kong](kong/kong.yml) | 8000 | **Borda única**: roteamento `/api/v1/*`, verificação de JWT (plugin `jwt`, `key_claim_name: iss`), CORS centralizado, correlation ID (`X-Request-Id`), rate limiting, `/internal/*` sem rota (404) |
+| [rabbitmq](docker-compose.yml) | 5672 / 15672 | **Barramento de eventos** (AMQP): exchange topic `passanorte.events`; UI de gestão em `:15672` (passanorte/passanorte) |
 | [auth](src/services/auth/README.md) | 8001 | Identidade, RBAC (`admin`/`employee`/`tourist`), sessão JWT, perfis, PII criptografado (Fernet/HMAC) |
 | [catalog](src/services/catalog/README.md) | 8002 | Pontos turísticos, categorias, eventos, cronogramas, deep links |
 | [validation](src/services/validation/README.md) | 8003 | Validação de presença por geolocalização (Haversine + índice parcial único) |
@@ -23,15 +24,31 @@ Kong Gateway na borda (porta 8000, config declarativa DB-less em `kong/kong.yml`
 | [notifications](src/services/notifications/README.md) | 8006 | Inscrições por interesse, inbox, dispatch idempotente |
 | [chatbot](src/services/chatbot/README.md) | 8007 | Chatbot de roteiro com RAG sobre o catálogo (pgvector 384d) |
 
+### Eventos entre serviços (RabbitMQ, D-05)
+
+Os efeitos colaterais que antes eram HTTP fire-and-forget agora são eventos publicados em `passanorte.events` (routing key = tipo) e consumidos por filas durable dentro do próprio processo FastAPI (lifespan). Falha na 1ª entrega → requeue; na redelivery → DLQ `passanorte.dlq` (visível na UI de gestão). Sem `RABBITMQ_URL`, o módulo fica **degradado**: publicação é no-op com um warn único e consumers não iniciam (dev sem docker).
+
+| Evento (routing key) | Produtor | Consumer (fila durable) |
+|---|---|---|
+| `visit.validated` | validation (`propagator.py`) | insights (`passanorte.insights.visit.validated` — fatos de visita) |
+| `access.registered` | auth (login) | insights (`passanorte.insights.access.registered` — at-least-once, analytics) |
+| `notification.dispatch` | catalog (spot/event), gamification (rota concluída) | notifications (`passanorte.notifications.dispatch` — dedup por user/kind/source) |
+| `catalog.index.refresh` | catalog (spot/event) | chatbot (`passanorte.chatbot.index.refresh` — re-embed do RAG) |
+
+- Envelope (`shared/messaging.EventEnvelope`): `{event_id, type, occurred_at, request_id, data}` — o `request_id` propaga o correlation ID entre serviços (logs JSON).
+- Entrega **at-least-once**; os consumers deduplicam (fatos por user+spot+momento, notificações por user+kind+source, índice por delete-then-insert).
+- `GET /health` continua **liveness-only** (sem ping do broker): queda do RabbitMQ não derruba os healthchecks dos serviços; a reconexão é automática (`RobustConnection`).
+
 ### `src/shared/` (biblioteca interna)
 
-- `app.py` — app factory: prefixo `/api/v1`, `GET /health` (liveness, sem ping de banco), middleware de correlation ID, handlers de erro
+- `app.py` — app factory: prefixo `/api/v1`, `GET /health` (liveness, sem ping de banco), middleware de correlation ID, handlers de erro, lifespan do barramento AMQP
 - `errors.py` — envelope único `{"error": {code, message, details}}` + header `X-Request-Id` em toda resposta; 500 nunca vaza detalhes
 - `logging.py` — log JSON por linha com `request_id`; `X-Request-Id` gerado pelo Kong na borda ou herdado do cliente, propagado ao serviço
 - `security.py` — JWT HS256 (access 15 min / refresh 7 dias), bcrypt (rounds 12), Fernet para PII, HMAC-SHA256 para unicidade de documento
-- `db.py` — `Base` compartilhado, engine por request (com `pool_pre_ping`), um database por serviço
+- `db.py` — `Base` compartilhado, engine por request (com `pool_pre_ping`), um database por serviço; `service_session_factory()` cacheada para os consumers
+- `messaging.py` — barramento RabbitMQ (aio-pika): envelope de eventos, `publish()` sync nunca-bloqueante, consumers com requeue/DLQ, seam de teste `set_publisher`
 - `audit.py` / `audit_model.py` — `AuditLog` declarado uma vez, reexportado; auditoria gravada na mesma transação da ação
-- `*_client.py` — clientes httpx fire-and-forget (insights, notifications, chatbot): 1 tentativa, falhas silenciosas
+- `*_client.py` — wrappers de publicação de eventos (notifications, tracking de insights, chatbot): mesmas assinaturas do antigo HTTP fire-and-forget, agora via `messaging.publish`
 
 Defesa em profundidade: o Kong valida a assinatura/expiração dos JWTs na borda (single Consumer casando o claim `iss`) e cada serviço repete a verificação de tipo de token e papéis com `require_role`. `/internal/*` não tem autenticação entre serviços — a proteção é a ausência de rota no Kong (404) e a rede interna. Rotas públicas (cadastro, login, leitura do catálogo, `GET /routes`) passam pela borda sem token; `POST /categories`/`POST /events` e demais escritas exigem JWT no Kong e são filtradas por papel no serviço.
 
@@ -53,7 +70,7 @@ Defesa em profundidade: o Kong valida a assinatura/expiração dos JWTs na borda
 docker compose up --build
 ```
 
-Sobe o Postgres (`pgvector/pgvector:pg16`), o Kong (`kong:3.9`, DB-less) e os 7 microsserviços (portas 8001–8007). O script `scripts/init-databases.sh` cria automaticamente os 7 databases (`passanorte_auth`, `passanorte_catalog`, ...) e a extensão `vector` no banco do chatbot.
+Sobe o Postgres (`pgvector/pgvector:pg16`), o RabbitMQ (`rabbitmq:3.13-management-alpine`, AMQP :5672 + UI :15672), o Kong (`kong:3.9`, DB-less) e os 7 microsserviços (portas 8001–8007). O script `scripts/init-databases.sh` cria automaticamente os 7 databases (`passanorte_auth`, `passanorte_catalog`, ...) e a extensão `vector` no banco do chatbot.
 
 Borda única em `http://localhost:8000/api/v1/...` — os clientes só precisam desse endereço (o Kong não serve `/docs`; cada serviço mantém o próprio em `http://localhost:<porta>/docs`, exposto apenas no loopback). A config declarativa do Kong (`kong/kong.yml`) renderiza `JWT_SECRET`/`JWT_ISSUER` do `.env` no boot via `kong/entrypoint-render.sh`.
 
@@ -91,7 +108,8 @@ Compartilhadas por todos os serviços (ver `docker-compose.yml`; há um `.env.ex
 | `JWT_SECRET` | assinatura/validação de tokens, compartilhado (serviços + Kong) | compose: `change-me-in-production`; código: default de desenvolvimento |
 | `JWT_ISSUER` | claim `iss` dos JWTs; deve casar com a credencial do Consumer no `kong/kong.yml` | `passanorte` |
 | `PII_ENCRYPTION_KEY` | criptografia de PII (CPF/passaporte, Fernet) **e** chave do HMAC de unicidade; se definida mas **vazia**, a importação de `shared.security` falha | sem ela, uma chave **efêmera** é gerada a cada processo (dados ficam irrecuperáveis em restart) |
-| `<SERVIÇO>_SERVICE_URL` | URL base de cada serviço p/ chamadas inter-serviço | fallback `http://localhost:<porta>` |
+| `<SERVIÇO>_SERVICE_URL` | URL base de cada serviço p/ consultas REST inter-serviço (pull) | fallback `http://localhost:<porta>` |
+| `RABBITMQ_URL` | barramento de eventos entre serviços (D-05); compose fixa `amqp://passanorte:passanorte@rabbitmq:5672/`. **Vazio = degradado** (publicação no-op com warn 1 vez, consumers não rodam) | compose define sempre; dev sem docker: vazio |
 | `ACCESS_TOKEN_MINUTES` / `REFRESH_TOKEN_DAYS` | validade dos JWTs (compartilhadas via `shared/security`) | `15` / `7` |
 | `LLM_PROVIDER` | provider do chatbot: `stub` \| `gemini` \| `ollama` | `stub` |
 | `LLM_GEMINI_API_KEY` / `LLM_OLLAMA_URL` / `LLM_OLLAMA_MODEL` | credenciais do provider escolhido | ollama: `http://localhost:11434`, modelo `llama3.1` |
@@ -121,7 +139,7 @@ Os testes de contrato cobrem os 7 user stories (`tests/contract/test_*_us*.py`);
 ## Estrutura do repositório
 
 ```
-├── docker-compose.yml        # Postgres (pgvector) + Kong :8000 + 7 serviços, portas 8001–8007
+├── docker-compose.yml        # Postgres (pgvector) + RabbitMQ (:5672) + Kong :8000 + 7 serviços, portas 8001–8007
 ├── Dockerfile                # imagem única uv + python3.11-slim (comando por serviço no compose)
 ├── .env.example              # variáveis compartilhadas (ver caveat sobre nomes do provider acima)
 ├── kong/
@@ -131,7 +149,7 @@ Os testes de contrato cobrem os 7 user stories (`tests/contract/test_*_us*.py`);
 │   ├── init-databases.sh     # cria 7 databases + ext. vector (roda no init do Postgres)
 │   └── create_admin.py       # credencial inicial do admin (RF01)
 ├── src/
-│   ├── shared/               # biblioteca interna (não é serviço): app factory, security, db, erros, logging, audit, clients httpx
+│   ├── shared/               # biblioteca interna (não é serviço): app factory, security, db, erros, logging, audit, barramento RabbitMQ
 │   └── services/             # 7 microsserviços de domínio, cada um com app/, alembic/ e README.md
 ├── specs/                    # contratos REST por user story (specs/001-passaporte-turistico-backend)
 └── tests/                    # unit / integration / contract

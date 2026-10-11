@@ -93,7 +93,7 @@ def mark_visit(
         db.commit()
         log_event(logger, "visit_validated", user_id=claims["sub"], spot_id=payload.tourist_spot_id,
                   distance_m=round(distance_m, 2))
-        # propagação tolerante a falhas (D-05): insights + gamification
+        # propagação do fato via barramento RabbitMQ (D-05): insights consome
         propagate(
             {
                 "user_id": claims["sub"],

@@ -24,6 +24,24 @@ services:
       timeout: 3s
       retries: 10
 
+  rabbitmq:
+    # barramento de eventos entre serviços (aio-pika): exchange topic
+    # passanorte.events + DLX passanorte.dlx/DLQ; UI de gestão em :15672
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: passanorte
+      RABBITMQ_DEFAULT_PASS: passanorte
+    ports:
+      - "127.0.0.1:5672:5672"   # AMQP (loopback)
+      - "127.0.0.1:15672:15672" # management UI (loopback)
+    volumes:
+      - rabbitmqdata:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   auth:
     build: { context: ., dockerfile: Dockerfile }
     command: uvicorn services.auth.app.main:app --host 0.0.0.0 --port 8001
@@ -33,6 +51,7 @@ services:
     environment: &svc_env
       PORT: "8001"
       DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_auth
+      RABBITMQ_URL: amqp://passanorte:passanorte@rabbitmq:5672/
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       PII_ENCRYPTION_KEY: ${PII_ENCRYPTION_KEY:-}
       AUTH_SERVICE_URL: http://auth:8001
@@ -44,6 +63,7 @@ services:
       CHATBOT_SERVICE_URL: http://chatbot:8007
     depends_on:
       db: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
     healthcheck:
       <<: *healthcheck
       test: ["CMD-SHELL", "python -c \"import os,urllib.request as u; u.urlopen('http://127.0.0.1:'+os.environ['PORT']+'/health')\""]
@@ -58,6 +78,7 @@ services:
       DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_catalog
     depends_on:
       db: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
     healthcheck:
       <<: *healthcheck
       test: ["CMD-SHELL", "python -c \"import os,urllib.request as u; u.urlopen('http://127.0.0.1:'+os.environ['PORT']+'/health')\""]
@@ -72,6 +93,7 @@ services:
       DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_validation
     depends_on:
       db: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
     healthcheck:
       <<: *healthcheck
       test: ["CMD-SHELL", "python -c \"import os,urllib.request as u; u.urlopen('http://127.0.0.1:'+os.environ['PORT']+'/health')\""]
@@ -86,6 +108,7 @@ services:
       DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_gamification
     depends_on:
       db: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
     healthcheck:
       <<: *healthcheck
       test: ["CMD-SHELL", "python -c \"import os,urllib.request as u; u.urlopen('http://127.0.0.1:'+os.environ['PORT']+'/health')\""]
@@ -100,6 +123,7 @@ services:
       DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_insights
     depends_on:
       db: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
     healthcheck:
       <<: *healthcheck
       test: ["CMD-SHELL", "python -c \"import os,urllib.request as u; u.urlopen('http://127.0.0.1:'+os.environ['PORT']+'/health')\""]
@@ -114,6 +138,7 @@ services:
       DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_notifications
     depends_on:
       db: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
     healthcheck:
       <<: *healthcheck
       test: ["CMD-SHELL", "python -c \"import os,urllib.request as u; u.urlopen('http://127.0.0.1:'+os.environ['PORT']+'/health')\""]
@@ -129,6 +154,7 @@ services:
       LLM_PROVIDER: ${LLM_PROVIDER:-stub}
     depends_on:
       db: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
     healthcheck:
       <<: *healthcheck
       test: ["CMD-SHELL", "python -c \"import os,urllib.request as u; u.urlopen('http://127.0.0.1:'+os.environ['PORT']+'/health')\""]
@@ -167,3 +193,4 @@ services:
 
 volumes:
   pgdata:
+  rabbitmqdata:
