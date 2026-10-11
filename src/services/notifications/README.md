@@ -23,7 +23,7 @@ Docs interativos: `http://localhost:8006/docs` (OpenAPI em `/openapi.json`).
 | GET | `/notifications` | inbox próprio, mais recentes primeiro (`{items, total}`) |
 | PATCH | `/notifications/{id}/read` | marca como lida (seta `read_at` só se nula — idempotente); 404 se inexistente/alheia |
 
-**Interno** — `app/api/internal.py`, `POST /internal/dispatch` (202), **sem autenticação no serviço** — o gateway bloqueia `/internal/*` na borda e a proteção é a rede interna. Payload dict bruto: `kind` ∈ `new_event|new_spot|new_route` (outro → 422 `invalid_kind`), `source_id`, `title`, opcionais `body`, `payload`, `user_ids` (notificação direta) ou `category_id` (fan-out para todos os inscritos da categoria). Sem nenhum dos dois → `{"notified": 0}`. Resposta `{"notified": n}` (duplicados já existentes são pulados).
+**Interno** — `app/api/internal.py`, `POST /internal/dispatch` (202), **sem autenticação no serviço** — sem rota para `/internal/*` no Kong (404 na borda); a proteção é a rede interna. Payload dict bruto: `kind` ∈ `new_event|new_spot|new_route` (outro → 422 `invalid_kind`), `source_id`, `title`, opcionais `body`, `payload`, `user_ids` (notificação direta) ou `category_id` (fan-out para todos os inscritos da categoria). Sem nenhum dos dois → `{"notified": 0}`. Resposta `{"notified": n}` (duplicados já existentes são pulados).
 
 ## Variáveis de ambiente
 

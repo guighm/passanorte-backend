@@ -35,7 +35,7 @@ Docs interativos: `http://localhost:8002/docs` (OpenAPI em `/openapi.json`).
 | POST/PATCH/DELETE | `/events[/{id}]` | CRUD de eventos (PATCH/DELETE não reindexam o chatbot) |
 | POST | `/categories` | nome duplicado → 409 `duplicate_category` |
 
-**Internos** (`/internal/*`, sem auth — o gateway bloqueia na borda):
+**Internos** (`/internal/*`, sem auth — sem rota correspondente no Kong, que responde 404 na borda):
 
 - `GET /internal/tourist-spots/{id}` — snapshot para o validation (raio, coordenadas, status, categorias).
 - `GET /internal/tourist-spots?ids=` — lista para feed/recomendação (RF26), `category_ids` por ponto.

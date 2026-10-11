@@ -16,7 +16,7 @@ Docs interativos: `http://localhost:8003/docs` (OpenAPI em `/openapi.json`).
 
 | Método | Caminho | Auth | Função |
 |---|---|---|---|
-| POST | `/visits` | JWT (service exige role `tourist` → 403 para os demais; o gateway permite qualquer papel) | registra visita: 201 validada / 200 idempotente / 422 rejeitada / 422 `gps_unavailable` / 503 `catalog_unavailable` |
+| POST | `/visits` | JWT (service exige role `tourist` → 403 para os demais; a borda Kong exige apenas JWT (papel decidido no serviço)) | registra visita: 201 validada / 200 idempotente / 422 rejeitada / 422 `gps_unavailable` / 503 `catalog_unavailable` |
 | GET | `/visits` | JWT (qualquer papel) | lista só as visitas `validated` do usuário (`{"items", "total"}`) |
 | GET | `/visits/{spot_id}` | JWT (qualquer papel) | visita validada do usuário para o ponto; 404 se não existir |
 | POST | `/internal/visits/propagate` | nenhuma (rota interna) | re-propaga um fato de visita; idempotente nos destinos |

@@ -1,3 +1,11 @@
+# Healthcheck compartilhado: chama /health do próprio serviço na PORT dele
+# (a imagem não tem curl; urlopen lançará erro em qualquer status != 2xx).
+x-healthcheck: &healthcheck
+  interval: 10s
+  timeout: 3s
+  retries: 6
+  start_period: 10s
+
 services:
   db:
     # imagem com a extensão pgvector embutida (D-08, banco passanorte_chatbot)
@@ -6,7 +14,7 @@ services:
       POSTGRES_USER: passanorte
       POSTGRES_PASSWORD: passanorte
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./scripts/init-databases.sh:/docker-entrypoint-initdb.d/init-databases.sh:ro
@@ -19,8 +27,11 @@ services:
   auth:
     build: { context: ., dockerfile: Dockerfile }
     command: uvicorn services.auth.app.main:app --host 0.0.0.0 --port 8001
-    ports: ["8001:8001"]
+    # portas dos serviços expostas apenas no loopback (debug local);
+    # clientes acessam tudo via Kong em :8000
+    ports: ["127.0.0.1:8001:8001"]
     environment: &svc_env
+      PORT: "8001"
       DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_auth
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       PII_ENCRYPTION_KEY: ${PII_ENCRYPTION_KEY:-}
@@ -33,78 +44,126 @@ services:
       CHATBOT_SERVICE_URL: http://chatbot:8007
     depends_on:
       db: { condition: service_healthy }
-
-  gateway:
-    build: { context: ., dockerfile: Dockerfile }
-    command: uvicorn services.gateway.app.main:app --host 0.0.0.0 --port 8000
-    ports: ["8000:8000"]
-    environment:
-      <<: *svc_env
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
-      GATEWAY_TIMEOUT_S: ${GATEWAY_TIMEOUT_S:-30}
-    depends_on:
-      db: { condition: service_healthy }
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD-SHELL", "python -c \"import os,urllib.request as u; u.urlopen('http://127.0.0.1:'+os.environ['PORT']+'/health')\""]
 
   catalog:
     build: { context: ., dockerfile: Dockerfile }
     command: uvicorn services.catalog.app.main:app --host 0.0.0.0 --port 8002
-    ports: ["8002:8002"]
+    ports: ["127.0.0.1:8002:8002"]
     environment:
       <<: *svc_env
+      PORT: "8002"
       DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_catalog
     depends_on:
       db: { condition: service_healthy }
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD-SHELL", "python -c \"import os,urllib.request as u; u.urlopen('http://127.0.0.1:'+os.environ['PORT']+'/health')\""]
 
   validation:
     build: { context: ., dockerfile: Dockerfile }
     command: uvicorn services.validation.app.main:app --host 0.0.0.0 --port 8003
-    ports: ["8003:8003"]
+    ports: ["127.0.0.1:8003:8003"]
     environment:
       <<: *svc_env
+      PORT: "8003"
       DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_validation
     depends_on:
       db: { condition: service_healthy }
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD-SHELL", "python -c \"import os,urllib.request as u; u.urlopen('http://127.0.0.1:'+os.environ['PORT']+'/health')\""]
 
   gamification:
     build: { context: ., dockerfile: Dockerfile }
     command: uvicorn services.gamification.app.main:app --host 0.0.0.0 --port 8004
-    ports: ["8004:8004"]
+    ports: ["127.0.0.1:8004:8004"]
     environment:
       <<: *svc_env
+      PORT: "8004"
       DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_gamification
     depends_on:
       db: { condition: service_healthy }
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD-SHELL", "python -c \"import os,urllib.request as u; u.urlopen('http://127.0.0.1:'+os.environ['PORT']+'/health')\""]
 
   insights:
     build: { context: ., dockerfile: Dockerfile }
     command: uvicorn services.insights.app.main:app --host 0.0.0.0 --port 8005
-    ports: ["8005:8005"]
+    ports: ["127.0.0.1:8005:8005"]
     environment:
       <<: *svc_env
+      PORT: "8005"
       DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_insights
     depends_on:
       db: { condition: service_healthy }
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD-SHELL", "python -c \"import os,urllib.request as u; u.urlopen('http://127.0.0.1:'+os.environ['PORT']+'/health')\""]
 
   notifications:
     build: { context: ., dockerfile: Dockerfile }
     command: uvicorn services.notifications.app.main:app --host 0.0.0.0 --port 8006
-    ports: ["8006:8006"]
+    ports: ["127.0.0.1:8006:8006"]
     environment:
       <<: *svc_env
+      PORT: "8006"
       DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_notifications
     depends_on:
       db: { condition: service_healthy }
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD-SHELL", "python -c \"import os,urllib.request as u; u.urlopen('http://127.0.0.1:'+os.environ['PORT']+'/health')\""]
 
   chatbot:
     build: { context: ., dockerfile: Dockerfile }
     command: uvicorn services.chatbot.app.main:app --host 0.0.0.0 --port 8007
-    ports: ["8007:8007"]
+    ports: ["127.0.0.1:8007:8007"]
     environment:
       <<: *svc_env
+      PORT: "8007"
       DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_chatbot
       LLM_PROVIDER: ${LLM_PROVIDER:-stub}
     depends_on:
       db: { condition: service_healthy }
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD-SHELL", "python -c \"import os,urllib.request as u; u.urlopen('http://127.0.0.1:'+os.environ['PORT']+'/health')\""]
+
+  kong:
+    # borda única em :8000 — config declarativa DB-less renderizada no boot
+    # (kong/entrypoint-render.sh substitui __JWT_SECRET__/__JWT_ISSUER__ do .env)
+    image: kong:3.9
+    entrypoint: ["/bin/sh", "/kong/entrypoint-render.sh"]
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /tmp/kong.yml
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_ACCESS_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_ACCESS_LOG: /dev/stderr
+      # Admin API desligada: em modo ro DB-less toda a config vem do arquivo;
+      # para deck/dashboard, troque por "localhost:8001"
+      KONG_ADMIN_LISTEN: "off"
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      JWT_ISSUER: ${JWT_ISSUER:-passanorte}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./kong/kong.yml:/kong/kong.yml:ro
+      - ./kong/entrypoint-render.sh:/kong/entrypoint-render.sh:ro
+    depends_on:
+      db: { condition: service_healthy }
+      auth: { condition: service_healthy }
+      catalog: { condition: service_healthy }
+      validation: { condition: service_healthy }
+      gamification: { condition: service_healthy }
+      insights: { condition: service_healthy }
+      notifications: { condition: service_healthy }
+      chatbot: { condition: service_healthy }
 
 volumes:
   pgdata:

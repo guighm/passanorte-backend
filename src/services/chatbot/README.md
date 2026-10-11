@@ -25,7 +25,7 @@ Docs interativos: `http://localhost:8007/docs` (OpenAPI em `/openapi.json`).
 | GET | `/conversations/{id}` | conversa + histórico de mensagens (com `references_ids`) |
 | POST | `/conversations/{id}/messages` | pipeline RAG: retrieve → prompt restrito → resposta com `references` e `estimated_cost` |
 
-**Interno** — `app/api/internal.py` (sem auth; o gateway bloqueia `/internal/*` na borda):
+**Interno** — `app/api/internal.py` (sem auth; sem rota para `/internal/*` no Kong, que responde 404 na borda):
 
 - `POST /internal/index/refresh` (202) — reconstrói embeddings dos itens alterados (D-08): payload `{items: [{source_type: tourist_spot|event|route, source_id, spot_id?, title, description, status, latitude?, longitude?, ticket_price?, occurs_at?, schedule_text?}]}`; resposta `{"indexed": n}`. Delete+reinsert por par — cada refresh gera novos UUIDs e `embedded_at` novo.
 

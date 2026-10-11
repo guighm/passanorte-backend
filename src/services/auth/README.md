@@ -39,7 +39,7 @@ Docs interativos: `http://localhost:8001/docs` (OpenAPI em `/openapi.json`).
 | GET / POST | `/employees` | lista/cria funcionário (409 `duplicate_email`) |
 | PATCH / DELETE | `/employees/{id}` | atualiza; DELETE é revogação lógica (`is_active=False`) |
 
-**Interno** — `GET /internal/users/{user_id}` devolve `{id, country_of_origin, role}` **sem PII** (RNF08), consumido por outros serviços; sem auth no código — a proteção é o gateway bloquear `/internal/*` na borda.
+**Interno** — `GET /internal/users/{user_id}` devolve `{id, country_of_origin, role}` **sem PII** (RNF08), consumido por outros serviços; sem auth no código — a proteção é a ausência de rota para `/internal/*` no Kong (404).
 
 ## Variáveis de ambiente
 

@@ -25,6 +25,15 @@ def test_access_token_expires():
     assert claims["exp"] > claims["iat"]
 
 
+def test_tokens_carry_iss_claim_for_kong_edge():
+    # o plugin jwt do Kong casa a credencial do Consumer pelo claim `iss`
+    # (kong/kong.yml, key_claim_name: iss)
+    access_claims = security.decode_token(security.create_access_token("user-1", "tourist")[0])
+    refresh_claims = security.decode_token(security.create_refresh_token("user-1", "tourist"), expected_type="refresh")
+    assert access_claims["iss"] == security.JWT_ISSUER
+    assert refresh_claims["iss"] == security.JWT_ISSUER
+
+
 def test_refresh_token_is_rejected_as_access():
     refresh = security.create_refresh_token("user-1", "tourist")
     with pytest.raises(jwt.InvalidTokenError):

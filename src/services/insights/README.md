@@ -24,7 +24,7 @@ Docs interativos: `http://localhost:8005/docs` (OpenAPI em `/openapi.json`).
 | GET | `/distributions/country-of-origin` | participação por país (RF09) — snapshot sem PII (RNF08) |
 | GET | `/distributions/interests` | participação por interesse (RF10) |
 
-**Internos** (`/internal/*`, sem auth — o gateway bloqueia na borda) — `app/api/internal.py`:
+**Internos** (`/internal/*`, sem auth — sem rota correspondente no Kong, que responde 404 na borda) — `app/api/internal.py`:
 
 - `POST /internal/visit-facts` — ingere fato de visita; idempotente (D-05) por `(user_id, tourist_spot_id, occurred_at)`, responde `{"id", "status": "ingested" | "already_ingested"}`. Payload não tipado (dict bruto): `user_id` e `tourist_spot_id` obrigatórios; aceita `spot_name`, `latitude`/`longitude`, `region_hint`, `country_of_origin`, `interests` (CSV snapshot), `occurred_at` (ISO; default agora UTC).
 - `POST /internal/accesses` — registra acesso: `{user_id, client? ("web"|"mobile")}`.

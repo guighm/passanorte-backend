@@ -4,17 +4,17 @@ Backend do sistema distribuído de gamificação do turismo de Manaus: turistas 
 
 > Cada serviço tem seu próprio `README.md` em `src/services/<serviço>/`, com endpoints, comandos, variáveis de ambiente e notas de implementação.
 
-**Stack:** Python 3.11+ · FastAPI · SQLAlchemy 2.x · Alembic · PostgreSQL 16 (pgvector) · httpx · JWT HS256 · bcrypt · Fernet · uv · Docker Compose
+**Stack:** Python 3.11+ · FastAPI · SQLAlchemy 2.x · Alembic · PostgreSQL 16 (pgvector) · httpx · JWT HS256 · bcrypt · Fernet · uv · Kong Gateway (DB-less) · Docker Compose
 
 ---
 
 ## Arquitetura em uma página
 
-7 microsserviços + 1 banco por serviço (Princípio I — a query nunca sai do banco próprio), comunicação REST síncrona (httpx, fire-and-forget tolerante a falhas — a propagação de visitas usa retry idempotente de 2 tentativas) e um `src/shared/` de biblioteca interna (não é um serviço). Sem broker, Redis ou cloud — infraestrutura inteira em Docker Compose, custo zero.
+Kong Gateway na borda (porta 8000, config declarativa DB-less em `kong/kong.yml`) + 7 microsserviços + 1 banco por serviço (Princípio I — a query nunca sai do banco próprio), comunicação REST síncrona (httpx, fire-and-forget tolerante a falhas — a propagação de visitas usa retry idempotente de 2 tentativas) e um `src/shared/` de biblioteca interna (não é um serviço). Sem broker, Redis ou cloud — infraestrutura inteira em Docker Compose, custo zero.
 
-| Serviço | Porta | Responsabilidade |
+| Componente | Porta | Responsabilidade |
 |---|---|---|
-| [gateway](src/services/gateway/README.md) | 8000 | Borda única: roteamento `/api/v1/*`, verificação de JWT, autorização coarse-grained, CORS centralizado, `/internal/*` bloqueado com 404 |
+| [kong](kong/kong.yml) | 8000 | **Borda única**: roteamento `/api/v1/*`, verificação de JWT (plugin `jwt`, `key_claim_name: iss`), CORS centralizado, correlation ID (`X-Request-Id`), rate limiting, `/internal/*` sem rota (404) |
 | [auth](src/services/auth/README.md) | 8001 | Identidade, RBAC (`admin`/`employee`/`tourist`), sessão JWT, perfis, PII criptografado (Fernet/HMAC) |
 | [catalog](src/services/catalog/README.md) | 8002 | Pontos turísticos, categorias, eventos, cronogramas, deep links |
 | [validation](src/services/validation/README.md) | 8003 | Validação de presença por geolocalização (Haversine + índice parcial único) |
@@ -27,13 +27,15 @@ Backend do sistema distribuído de gamificação do turismo de Manaus: turistas 
 
 - `app.py` — app factory: prefixo `/api/v1`, `GET /health` (liveness, sem ping de banco), middleware de correlation ID, handlers de erro
 - `errors.py` — envelope único `{"error": {code, message, details}}` + header `X-Request-Id` em toda resposta; 500 nunca vaza detalhes
-- `logging.py` — log JSON por linha com `request_id`; `X-Request-Id` herdado do cliente ou gerado, propagado gateway → serviço
+- `logging.py` — log JSON por linha com `request_id`; `X-Request-Id` gerado pelo Kong na borda ou herdado do cliente, propagado ao serviço
 - `security.py` — JWT HS256 (access 15 min / refresh 7 dias), bcrypt (rounds 12), Fernet para PII, HMAC-SHA256 para unicidade de documento
 - `db.py` — `Base` compartilhado, engine por request (com `pool_pre_ping`), um database por serviço
 - `audit.py` / `audit_model.py` — `AuditLog` declarado uma vez, reexportado; auditoria gravada na mesma transação da ação
 - `*_client.py` — clientes httpx fire-and-forget (insights, notifications, chatbot): 1 tentativa, falhas silenciosas
 
-Defesa em profundidade: o gateway valida JWT + papéis coarse-grained e cada serviço repete com `require_role`; `/internal/*` não tem autenticação entre serviços — a proteção é o bloqueio na borda (404) e a rede interna.
+Defesa em profundidade: o Kong valida a assinatura/expiração dos JWTs na borda (single Consumer casando o claim `iss`) e cada serviço repete a verificação de tipo de token e papéis com `require_role`. `/internal/*` não tem autenticação entre serviços — a proteção é a ausência de rota no Kong (404) e a rede interna. Rotas públicas (cadastro, login, leitura do catálogo, `GET /routes`) passam pela borda sem token; `POST /categories`/`POST /events` e demais escritas exigem JWT no Kong e são filtradas por papel no serviço.
+
+> **Nota sobre o envelope de erro na borda:** respostas geradas no próprio Kong (401 de token inválido, 404 de rota desconhecida, 429 de rate limit, 502/504 de serviço indisponível/timeout) usam o formato do Kong (`{"message": ...}`), não o envelope `{"error": {code, message, details}}` do projeto — o `X-Request-Id` continua presente em todas. Clientes devem ramificar por HTTP status quando a resposta não tem a chave `error`.
 
 ---
 
@@ -51,9 +53,9 @@ Defesa em profundidade: o gateway valida JWT + papéis coarse-grained e cada ser
 docker compose up --build
 ```
 
-Sobe o Postgres (`pgvector/pgvector:pg16`) + os 8 serviços (portas 8000–8007). O script `scripts/init-databases.sh` cria automaticamente os 7 databases (`passanorte_auth`, `passanorte_catalog`, ...) e a extensão `vector` no banco do chatbot.
+Sobe o Postgres (`pgvector/pgvector:pg16`), o Kong (`kong:3.9`, DB-less) e os 7 microsserviços (portas 8001–8007). O script `scripts/init-databases.sh` cria automaticamente os 7 databases (`passanorte_auth`, `passanorte_catalog`, ...) e a extensão `vector` no banco do chatbot.
 
-Gateway disponível em `http://localhost:8000/docs` — os clientes só precisam desse endereço.
+Borda única em `http://localhost:8000/api/v1/...` — os clientes só precisam desse endereço (o Kong não serve `/docs`; cada serviço mantém o próprio em `http://localhost:<porta>/docs`, exposto apenas no loopback). A config declarativa do Kong (`kong/kong.yml`) renderiza `JWT_SECRET`/`JWT_ISSUER` do `.env` no boot via `kong/entrypoint-render.sh`.
 
 ### Desenvolvimento local (sem Docker)
 
@@ -86,11 +88,10 @@ Compartilhadas por todos os serviços (ver `docker-compose.yml`; há um `.env.ex
 | Variável | Uso | Default |
 |---|---|---|
 | `DATABASE_URL` | Postgres do serviço | obrigatória em produção (sem ela cai em SQLite silenciosamente) |
-| `JWT_SECRET` | assinatura/validação de tokens, compartilhado | compose: `change-me-in-production`; código: default de desenvolvimento |
+| `JWT_SECRET` | assinatura/validação de tokens, compartilhado (serviços + Kong) | compose: `change-me-in-production`; código: default de desenvolvimento |
+| `JWT_ISSUER` | claim `iss` dos JWTs; deve casar com a credencial do Consumer no `kong/kong.yml` | `passanorte` |
 | `PII_ENCRYPTION_KEY` | criptografia de PII (CPF/passaporte, Fernet) **e** chave do HMAC de unicidade; se definida mas **vazia**, a importação de `shared.security` falha | sem ela, uma chave **efêmera** é gerada a cada processo (dados ficam irrecuperáveis em restart) |
 | `<SERVIÇO>_SERVICE_URL` | URL base de cada serviço p/ chamadas inter-serviço | fallback `http://localhost:<porta>` |
-| `ALLOWED_ORIGINS` | CORS do gateway (vírgula-separada ou `*`) | `*` |
-| `GATEWAY_TIMEOUT_S` | timeout do proxy do gateway (connect fixo em 5s) | `30` |
 | `ACCESS_TOKEN_MINUTES` / `REFRESH_TOKEN_DAYS` | validade dos JWTs (compartilhadas via `shared/security`) | `15` / `7` |
 | `LLM_PROVIDER` | provider do chatbot: `stub` \| `gemini` \| `ollama` | `stub` |
 | `LLM_GEMINI_API_KEY` / `LLM_OLLAMA_URL` / `LLM_OLLAMA_MODEL` | credenciais do provider escolhido | ollama: `http://localhost:11434`, modelo `llama3.1` |
@@ -113,22 +114,25 @@ uv run ruff format .
 uv run mypy src               # type check (namespace packages, alembic excluído)
 ```
 
-Os testes de contrato cobrem os 7 user stories (`tests/contract/test_*_us*.py`); os de integração exercem as jornadas completas (turista, admin, visitas, gamificação, insights, notificações, chatbot); os unit cobrem invariantes (RBAC, Haversine, sessão, RAG, invariants de gamificação e o gateway).
+Os testes de contrato cobrem os 7 user stories (`tests/contract/test_*_us*.py`); os de integração exercem as jornadas completas (turista, admin, visitas, gamificação, insights, notificações, chatbot); os unit cobrem invariantes (RBAC, Haversine, sessão, RAG, invariants de gamificação). O Kong não participa dos testes em processo — a config é validada no boot (`kong config parse`, ver abaixo).
 
 ---
 
 ## Estrutura do repositório
 
 ```
-├── docker-compose.yml        # Postgres (pgvector) + 8 serviços, portas 8000–8007
+├── docker-compose.yml        # Postgres (pgvector) + Kong :8000 + 7 serviços, portas 8001–8007
 ├── Dockerfile                # imagem única uv + python3.11-slim (comando por serviço no compose)
 ├── .env.example              # variáveis compartilhadas (ver caveat sobre nomes do provider acima)
+├── kong/
+│   ├── kong.yml              # config declarativa DB-less do gateway (rotas, plugins, Consumer jwt)
+│   └── entrypoint-render.sh  # injeta JWT_SECRET/JWT_ISSUER do .env no boot
 ├── scripts/
 │   ├── init-databases.sh     # cria 7 databases + ext. vector (roda no init do Postgres)
 │   └── create_admin.py       # credencial inicial do admin (RF01)
 ├── src/
 │   ├── shared/               # biblioteca interna (não é serviço): app factory, security, db, erros, logging, audit, clients httpx
-│   └── services/             # 8 microsserviços (gateway + 7 de domínio), cada um com app/, alembic/ e README.md
+│   └── services/             # 7 microsserviços de domínio, cada um com app/, alembic/ e README.md
 ├── specs/                    # contratos REST por user story (specs/001-passaporte-turistico-backend)
 └── tests/                    # unit / integration / contract
 ```

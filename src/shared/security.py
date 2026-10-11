@@ -25,6 +25,10 @@ PII_ENCRYPTION_KEY = os.environ.get("PII_ENCRYPTION_KEY", Fernet.generate_key().
 ACCESS_TOKEN_MINUTES = int(os.environ.get("ACCESS_TOKEN_MINUTES", "15"))
 REFRESH_TOKEN_DAYS = int(os.environ.get("REFRESH_TOKEN_DAYS", "7"))
 JWT_ALGORITHM = "HS256"
+# Issuer dos tokens: usado pelo plugin `jwt` do Kong para casar a credencial do
+# Consumer (kong/kong.yml). Os serviços não verificam `iss` (PyJWT default) —
+# o claim é para a camada de borda.
+JWT_ISSUER = os.environ.get("JWT_ISSUER", "passanorte")
 
 
 # --- Sessão (JWT) -----------------------------------------------------------
@@ -37,6 +41,7 @@ def create_access_token(user_id: str, role: str) -> tuple[str, int]:
         "sub": user_id,
         "role": role,
         "type": "access",
+        "iss": JWT_ISSUER,
         "iat": now,
         "exp": now + dt.timedelta(seconds=expires_in),
         "jti": uuid.uuid4().hex,
@@ -50,6 +55,7 @@ def create_refresh_token(user_id: str, role: str) -> str:
         "sub": user_id,
         "role": role,
         "type": "refresh",
+        "iss": JWT_ISSUER,
         "iat": now,
         "exp": now + dt.timedelta(days=REFRESH_TOKEN_DAYS),
         "jti": secrets.token_urlsafe(16),
