@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI
+from fastapi.openapi.utils import get_openapi
 
 from shared import messaging
 from shared.errors import install_error_handlers
@@ -55,6 +56,26 @@ def create_app(
     )
     app.add_middleware(CorrelationIdMiddleware, service_name=service_name)
     install_error_handlers(app)
+
+    # Scheme `bearerAuth` no OpenAPI: habilita o botão Authorize do Swagger UI
+    # para as rotas protegidas (JWT via header Authorization). Só metadados do
+    # schema — as dependências continuam lendo o header em runtime, e endpoints
+    # públicos seguem sem exigir nada.
+    def _openapi_schema() -> dict[str, Any]:
+        if app.openapi_schema is None:
+            app.openapi_schema = get_openapi(
+                title=app.title,
+                version=app.version,
+                description=app.description,
+                routes=app.routes,
+            )
+            app.openapi_schema.setdefault("components", {}).setdefault("securitySchemes", {})[
+                "bearerAuth"
+            ] = {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}
+            app.openapi_schema["security"] = [{"bearerAuth": []}]
+        return app.openapi_schema
+
+    app.openapi = _openapi_schema  # type: ignore[method-assign]
 
     @app.get("/health", tags=["ops"])
     async def health() -> dict[str, str]:
