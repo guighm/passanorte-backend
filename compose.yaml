@@ -50,13 +50,13 @@ services:
       - "127.0.0.1:8080:3000"
     environment:
       CONNECTIONS: con1
-      CONNECTION_con1_DRIVER: postgres
-      CONNECTION_con1_SERVER: db
-      CONNECTION_con1_PORT: "5432"
-      CONNECTION_con1_USER: passanorte
-      CONNECTION_con1_PASSWORD: passanorte
-      CONNECTION_con1_LABEL: SPD Postgres
-      CONNECTION_con1_READONLY: "false"
+      ENGINE_con1: postgres@dbgate-plugin-postgres
+      SERVER_con1: db
+      PORT_con1: "5432"
+      USER_con1: passanorte
+      PASSWORD_con1: passanorte
+      LABEL_con1: SPD Postgres
+      READONLY_con1: "false"
     depends_on:
       db: { condition: service_healthy }
 
