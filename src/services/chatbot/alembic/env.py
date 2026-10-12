@@ -6,6 +6,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from services.chatbot.app import models  # noqa: F401  (registra as tabelas)
+from shared.alembic_render import render_item_with_custom_types
 from shared.db import Base
 
 config = context.config
@@ -23,7 +24,12 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata)
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            # EmbeddingType (pgvector/JSON) precisa do import no arquivo gerado
+            render_item=render_item_with_custom_types,
+        )
         with context.begin_transaction():
             context.run_migrations()
 

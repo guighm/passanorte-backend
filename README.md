@@ -118,7 +118,7 @@ Compartilhadas por todos os serviços (ver `docker-compose.yml`; há um `.env.ex
 >
 > **Cuidado:** o `.env.example` atual usa os nomes `GEMINI_API_KEY` e `OLLAMA_BASE_URL`, que o código **não lê** (os nomes válidos são `LLM_GEMINI_API_KEY` e `LLM_OLLAMA_URL`); `TOLERANCE_RADIUS_DEFAULT_M` também não é lida (o raio de tolerância vive no catalog, por ponto).
 
-> **Nota sobre migrations:** cada serviço tem scaffold Alembic (`alembic/env.py`), mas nenhuma revisão foi gerada (`alembic/versions/` vazio em todos — e os `app/models/__init__.py` vazios registram nenhuma tabela no metadata do Alembic). Em dev, o schema é criado via `Base.metadata.create_all` pelos testes; ao rodar um serviço com banco novo pela primeira vez, gere as migrations com `alembic revision --autogenerate` dentro de `src/services/<serviço>/` (ajustando o import de models no `env.py`).
+> **Nota sobre migrations:** cada serviço tem scaffold Alembic (`alembic/env.py`) e a migração inicial já gerada em `alembic/versions/`. Os `app/models/__init__.py` importam os modelos para registrá-los no metadata do Alembic — novos modelos precisam ser adicionados lá. Em dev, o schema é criado via `Base.metadata.create_all` pelos testes; para (re)gerar migrações use `scripts/generate_migrations.sh [serviço...] [-m "mensagem"]` — por padrão compara os modelos contra um banco SQLite vazio temporário, ou use `--database-url 'postgresql://...passanorte_{svc}'` para dif contra o Postgres (migrações incrementais).
 
 ---
 

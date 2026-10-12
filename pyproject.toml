@@ -35,6 +35,8 @@ asyncio_mode = "auto"
 [tool.ruff]
 line-length = 120
 target-version = "py311"
+# arquivos gerados pelo alembic (env.py, versions/*): mesmo motivo do exclude do mypy
+extend-exclude = ["**/alembic/"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B"]
