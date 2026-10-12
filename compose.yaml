@@ -42,6 +42,24 @@ services:
       timeout: 3s
       retries: 10
 
+  dbgate:
+    # cliente web de administração dos bancos Postgres (debug local);
+    # conexões pré-configuradas via env (todas as bases passanorte_*)
+    image: dbgate/dbgate:alpine
+    ports:
+      - "127.0.0.1:8080:3000"
+    environment:
+      CONNECTIONS: con1
+      CONNECTION_con1_DRIVER: postgres
+      CONNECTION_con1_SERVER: db
+      CONNECTION_con1_PORT: "5432"
+      CONNECTION_con1_USER: passanorte
+      CONNECTION_con1_PASSWORD: passanorte
+      CONNECTION_con1_LABEL: SPD Postgres
+      CONNECTION_con1_READONLY: "false"
+    depends_on:
+      db: { condition: service_healthy }
+
   auth:
     build: { context: ., dockerfile: Dockerfile }
     command: uvicorn services.auth.app.main:app --host 0.0.0.0 --port 8001
