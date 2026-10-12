@@ -9,10 +9,11 @@
 #
 # Alvo do autogenerate:
 #   - Por padrão, compara os modelos contra um banco SQLite vazio temporário
-#     (o fallback de dev do env.py) e apaga o arquivo ao final — a primeira
-#     migração de cada serviço sai com o schema completo, sem depender do
-#     Postgres estar no ar. O `stamp head` satisfaz a checagem do Alembic sem
-#     criar as tabelas de domínio.
+#     (o fallback de dev do env.py) e apaga o arquivo ao final. Antes do diff,
+#     `upgrade head` sobe a cadeia de migrações existente no banco temporário —
+#     assim o autogenerate vê as tabelas já cobertas pelas migrações e saída é
+#     sempre incremental (rodar duas vezes gera arquivo vazio, não duplica o
+#     schema). As migrações escritas são portáveis entre sqlite e Postgres.
 #   - Com --database-url, compara contra o banco indicado (útil para migrações
 #     incrementais); `{svc}` no template é trocado pelo nome do serviço.
 #     Ex.: postgresql://passanorte:passanorte@localhost:5432/passanorte_{svc}
@@ -73,13 +74,10 @@ for svc in "${SERVICES[@]}"; do
   fi
 
   echo "==> $svc ($url)"
-  if [[ -n "$TMPDIR_DB" ]]; then
-    # só cria a tabela alembic_version (em head), mas nenhum schema de domínio
-    DATABASE_URL="$url" uv run alembic -c "src/services/$svc/alembic.ini" stamp head
-  else
-    # banco real precisa estar na revisão mais recente para gerar a próxima
-    DATABASE_URL="$url" uv run alembic -c "src/services/$svc/alembic.ini" upgrade head
-  fi
+  # sobe a cadeia de migrações existente no banco alvo (vazio na primeira vez,
+  # já migrado nas seguintes) antes do diff. Em banco real isso é um upgrade
+  # direto; em banco temporário valida também que as migrações são portáveis.
+  DATABASE_URL="$url" uv run alembic -c "src/services/$svc/alembic.ini" upgrade head
   DATABASE_URL="$url" uv run alembic \
     -c "src/services/$svc/alembic.ini" \
     revision --autogenerate -m "$MESSAGE"
