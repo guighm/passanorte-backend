@@ -1,5 +1,8 @@
 #!/bin/bash
-# Cria um database por microsserviço (Princípio I da Constituição)
+# Cria um database por microsserviço (Princípio I da Constituição).
+# As migrações (alembic upgrade head) NÃO rodam aqui: este script executa dentro
+# do container do Postgres, sem Python/Alembic. Quem as aplica é o serviço
+# one-shot "migrate" do compose (scripts/apply_migrations.sh), no boot seguinte.
 set -euo pipefail
 
 for db in passanorte_auth passanorte_catalog passanorte_validation \

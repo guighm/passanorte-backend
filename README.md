@@ -98,6 +98,11 @@ Borda única em `http://localhost:8000/api/v1/...` — os clientes só precisam 
    # sem --password, gera uma senha forte aleatória e a imprime
    ```
 
+   No docker compose isso roda sozinho: o serviço one-shot `seed` (depende do
+   `migrate`) cria `ADMIN_EMAIL` (default `admin@passanorte.com`) com
+   `ADMIN_PASSWORD` — se vazia, gera uma aleatória e imprime nos logs do
+   container. Idempotente (`--if-missing`): nada faz se o admin já existir.
+
 ### Variáveis de ambiente
 
 Compartilhadas por todos os serviços (ver `docker-compose.yml`; há um `.env.example` na raiz):

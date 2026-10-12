@@ -60,6 +60,38 @@ services:
     depends_on:
       db: { condition: service_healthy }
 
+  migrate:
+    # one-shot: aplica as migrações Alembic (alembic upgrade head) de cada
+    # serviço no respectivo database antes dos serviços subirem. Roda depois do
+    # init-databases.sh (só cria os databases/extensões — este script não pode
+    # rodar Alembic, pois executa dentro do container do Postgres). Idempotente:
+    # revisões já aplicadas são puladas via alembic_version.
+    build: { context: ., dockerfile: Dockerfile }
+    command: bash scripts/apply_migrations.sh
+    environment:
+      DATABASE_URL_TEMPLATE: postgresql://passanorte:passanorte@db:5432/passanorte_{svc}
+    depends_on:
+      db: { condition: service_healthy }
+
+  seed:
+    # one-shot: cria o admin inicial (RF01) após as migrações. Idempotente
+    # (--if-missing): em boots seguintes apenas registra que já existe.
+    # Senha: $ADMIN_PASSWORD; se vazia, gera aleatória e imprime nos logs.
+    build: { context: ., dockerfile: Dockerfile }
+    command:
+      - python
+      - scripts/create_admin.py
+      - --if-missing
+      - --email
+      - ${ADMIN_EMAIL:-admin@passanorte.com}
+      - --password
+      - ${ADMIN_PASSWORD:-}
+    environment:
+      DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_auth
+    depends_on:
+      db: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+
   auth:
     build: { context: ., dockerfile: Dockerfile }
     command: uvicorn services.auth.app.main:app --host 0.0.0.0 --port 8001
@@ -79,8 +111,11 @@ services:
       INSIGHTS_SERVICE_URL: http://insights:8005
       NOTIFICATIONS_SERVICE_URL: http://notifications:8006
       CHATBOT_SERVICE_URL: http://chatbot:8007
+    # admin inicial precisa existir antes do auth subir (seed depende do migrate)
     depends_on:
       db: { condition: service_healthy }
+      seed: { condition: service_completed_successfully }
+      migrate: { condition: service_completed_successfully }
       rabbitmq: { condition: service_healthy }
     healthcheck:
       <<: *healthcheck
@@ -96,6 +131,7 @@ services:
       DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_catalog
     depends_on:
       db: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
       rabbitmq: { condition: service_healthy }
     healthcheck:
       <<: *healthcheck
@@ -111,6 +147,7 @@ services:
       DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_validation
     depends_on:
       db: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
       rabbitmq: { condition: service_healthy }
     healthcheck:
       <<: *healthcheck
@@ -126,6 +163,7 @@ services:
       DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_gamification
     depends_on:
       db: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
       rabbitmq: { condition: service_healthy }
     healthcheck:
       <<: *healthcheck
@@ -141,6 +179,7 @@ services:
       DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_insights
     depends_on:
       db: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
       rabbitmq: { condition: service_healthy }
     healthcheck:
       <<: *healthcheck
@@ -156,6 +195,7 @@ services:
       DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_notifications
     depends_on:
       db: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
       rabbitmq: { condition: service_healthy }
     healthcheck:
       <<: *healthcheck
@@ -172,6 +212,7 @@ services:
       LLM_PROVIDER: ${LLM_PROVIDER:-stub}
     depends_on:
       db: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
       rabbitmq: { condition: service_healthy }
     healthcheck:
       <<: *healthcheck

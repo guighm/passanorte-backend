@@ -3,6 +3,7 @@
 Uso:
     uv run python scripts/create_admin.py --email admin@passanorte.com --password '...'
     uv run python scripts/create_admin.py            # gera senha aleatória e imprime
+    uv run python scripts/create_admin.py --email ... --if-missing  # só cria se o email for novo
 """
 
 from __future__ import annotations
@@ -24,6 +25,9 @@ def main() -> int:
     parser.add_argument("--password", help="se omitido, uma senha forte é gerada e impressa")
     parser.add_argument("--name", default="Admin")
     parser.add_argument("--surname", default="PassaNorte")
+    parser.add_argument("--if-missing", action="store_true",
+                        help="não falha nem cria nada se o email já existir "
+                             "(usado pelo seed one-shot do compose)")
     args = parser.parse_args()
 
     password = args.password or (secrets.token_urlsafe(16) + "Aa1!")
@@ -34,6 +38,9 @@ def main() -> int:
     try:
         existing = db.query(User).filter(User.email == args.email).first()
         if existing is not None:
+            if args.if_missing:
+                print(f"admin já existe: {args.email} — nada a fazer.")
+                return 0
             print(f"erro: email {args.email} já cadastrado.", file=sys.stderr)
             return 1
         user = User(
