@@ -1,0 +1,36 @@
+name: Backend quality and integration
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+      - run: python -m pip install uv==0.13.9
+      - run: uv sync --frozen
+      - run: uv lock --check
+      - run: uv run --frozen ruff check src tests scripts
+      - run: uv run --frozen mypy src
+      - run: uv run --frozen pytest -q
+      - run: uv run --frozen python scripts/check_secrets.py
+      - run: uv run --frozen python scripts/generate_secrets.py
+      - run: docker compose --env-file .env.example -p passanorte-ci config --quiet
+      - run: docker compose --env-file .env.example -p passanorte-ci up --build -d --wait --wait-timeout 180
+      - run: uv run --frozen python scripts/smoke_s2.py --email admin@example.com --s3
+      - name: Verify readiness and recovery
+        run: bash scripts/verify_s2_recovery.sh -p passanorte-ci
+      - run: |
+          docker compose --env-file .env.example -p passanorte-ci exec -T db \
+            psql -X -v ON_ERROR_STOP=1 -U passanorte -d passanorte < scripts/verify_s2_privileges.sql
+      - run: bash scripts/verify_s2_restore.sh .env.example
+        env:
+          COMPOSE_PROJECT_NAME: passanorte-ci
+      - run: bash scripts/verify_s2_migration.sh
+      - if: always()
+        run: docker compose --env-file .env.example -p passanorte-ci down

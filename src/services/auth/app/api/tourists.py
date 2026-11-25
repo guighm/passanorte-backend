@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, status
+from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from services.auth.app.core.categories import get_category_lookup, validate_categories
 from services.auth.app.core.deps import get_db
-from services.auth.app.models.user import TouristProfile, User, UserRole
+from services.auth.app.models.user import TouristInterest, TouristProfile, User, UserRole
 from services.auth.app.schemas.auth_schemas import MeResponse, TouristCreate
 from shared.errors import ApiError
 from shared.logging import log_event
@@ -15,50 +21,47 @@ from shared.security import encrypt_pii, hash_password, pii_uniqueness_hash
 router = APIRouter(tags=["tourists"])
 
 
-def _masked(document_encrypted: str | None) -> str | None:
-    """Marca de presença do documento sem expor PII (RNF08)."""
-    return "***" if document_encrypted else None
-
-
 @router.post("/tourists", response_model=MeResponse, status_code=status.HTTP_201_CREATED)
-def register_tourist(payload: TouristCreate, db: Session = Depends(get_db)) -> User:
-    if payload.cpf is None and payload.passport is None:
-        raise ApiError(
-            code="document_required",
-            message="Informe CPF ou número de passaporte.",
-            status_code=422,
-        )
-
-    if db.query(User).filter(User.email == payload.email).first() is not None:
+def register_tourist(
+    payload: TouristCreate, db: Session = Depends(get_db),
+    category_lookup: Callable[[list[str]], set[str]] = Depends(get_category_lookup),
+) -> User:
+    email = payload.email.lower()
+    if db.query(User).filter(func.lower(User.email) == email).first() is not None:
         raise ApiError(code="duplicate_identity", message="Email já cadastrado.", status_code=409)
+    document = payload.cpf or payload.passport
+    assert document is not None
+    hashes = [pii_uniqueness_hash(document)]
+    if payload.cpf:
+        cpf = payload.cpf
+        hashes.append(pii_uniqueness_hash(f"{cpf[:3]}.{cpf[3:6]}.{cpf[6:9]}-{cpf[9:]}"))
+    if db.query(User).filter(User.cpf_hash.in_(hashes) | User.passport_hash.in_(hashes)).first():
+        raise ApiError("duplicate_identity", "Documento já cadastrado.", 409)
 
-    document = (payload.cpf or payload.passport).strip()
-    document_hash = pii_uniqueness_hash(document)
-    if db.query(User).filter((User.cpf_hash == document_hash) | (User.passport_hash == document_hash)).first():
-        raise ApiError(
-            code="duplicate_identity",
-            message="Documento já cadastrado.",
-            status_code=409,
-            details={"field": "cpf" if payload.cpf else "passport"},
-        )
-
+    categories = validate_categories(payload.category_ids, category_lookup)
     user = User(
         role=UserRole.tourist,
         name=payload.name,
         surname=payload.surname,
-        email=payload.email,
+        email=email,
         password_hash=hash_password(payload.password),
         phone_encrypted=encrypt_pii(payload.phone),
         cpf_encrypted=encrypt_pii(payload.cpf) if payload.cpf else None,
-        cpf_hash=pii_uniqueness_hash(payload.cpf) if payload.cpf else None,
+        cpf_hash=hashes[0] if payload.cpf else None,
         passport_encrypted=encrypt_pii(payload.passport) if payload.passport else None,
-        passport_hash=pii_uniqueness_hash(payload.passport) if payload.passport else None,
+        passport_hash=hashes[0] if payload.passport else None,
         country_of_origin=payload.country_of_origin,
     )
-    db.add(user)
-    db.flush()
-    db.add(TouristProfile(user_id=user.id))
-    db.commit()
+    try:
+        db.add(user)
+        db.flush()
+        db.add(TouristProfile(user_id=user.id, consent_version=payload.consent_version, consent_at=datetime.now(UTC)))
+        db.flush()
+        db.add_all(TouristInterest(user_id=user.id, category_id=category) for category in categories)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise ApiError("duplicate_identity", "E-mail ou documento já cadastrado.", 409) from None
     log_event(__import__("logging").getLogger("auth"), "tourist_registered", user_id=user.id)
     return user
 

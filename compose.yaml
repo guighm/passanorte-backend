@@ -1,255 +1,348 @@
-# Healthcheck compartilhado: chama /health do próprio serviço na PORT dele
-# (a imagem não tem curl; urlopen lançará erro em qualquer status != 2xx).
-x-healthcheck: &healthcheck
-  interval: 10s
-  timeout: 3s
-  retries: 6
-  start_period: 10s
+x-environment: &environment
+  APP_ENV: ${APP_ENV:-production}
+  RABBITMQ_URL_FILE: /run/secrets/rabbit_url
+  JWT_PUBLIC_KEYS_DIR: /run/public-keys
+  JWT_ISSUER: ${JWT_ISSUER:-passanorte}
+  JWT_AUDIENCE: ${JWT_AUDIENCE:-passanorte-api}
+  ACCESS_TOKEN_MINUTES: ${ACCESS_TOKEN_MINUTES:-15}
+  REFRESH_TOKEN_DAYS: ${REFRESH_TOKEN_DAYS:-7}
+  CATALOG_SERVICE_URL: http://catalog:8002
+  AUTH_SERVICE_URL: http://auth:8001
+  BENEFITS_SERVICE_URL: http://benefits:8008
+  GAMIFICATION_SERVICE_URL: http://gamification:8004
+  EDGE_PUBLIC_URL: ${EDGE_PUBLIC_URL:-https://localhost:8443}
+  DEPLOYMENT_CITY: ${DEPLOYMENT_CITY:-Manaus}
+  DEPLOYMENT_TIMEZONE: ${DEPLOYMENT_TIMEZONE:-America/Manaus}
+  DEPLOYMENT_LANGUAGE: ${DEPLOYMENT_LANGUAGE:-pt-BR}
+  MAP_CENTER_LATITUDE: ${MAP_CENTER_LATITUDE:--3.119}
+  MAP_CENTER_LONGITUDE: ${MAP_CENTER_LONGITUDE:--60.0217}
+
+x-service: &service
+  build: {context: ., target: runtime}
+  restart: unless-stopped
+  init: true
+  networks: [edge, data]
+  mem_limit: 512m
+  cpus: 1
+  volumes:
+    - ${SECRETS_DIR:-./secrets}/public:/run/public-keys:ro
+  depends_on:
+    db: {condition: service_healthy}
+    rabbitmq: {condition: service_healthy}
+    migrate: {condition: service_completed_successfully}
 
 services:
   db:
-    # imagem com a extensão pgvector embutida (D-08, banco passanorte_chatbot)
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:0.8.1-pg16-bookworm@sha256:33198da2828a14c30348d2ccb4750833d5ed9a44c88d840a0e523d7417120337
+    restart: unless-stopped
     environment:
       POSTGRES_USER: passanorte
-      POSTGRES_PASSWORD: passanorte
-    ports:
-      - "127.0.0.1:5432:5432"
+      POSTGRES_DB: passanorte
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    networks: [data]
+    mem_limit: 768m
     volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./scripts/init-databases.sh:/docker-entrypoint-initdb.d/init-databases.sh:ro
+      - pgdata_s2:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U passanorte"]
+      test: ["CMD", "pg_isready", "-U", "passanorte", "-d", "passanorte"]
       interval: 5s
       timeout: 3s
       retries: 10
 
   rabbitmq:
-    # barramento de eventos entre serviços (aio-pika): exchange topic
-    # passanorte.events + DLX passanorte.dlx/DLQ; UI de gestão em :15672
-    image: rabbitmq:3.13-management-alpine
+    image: rabbitmq:3.13.7-management-alpine@sha256:606d8c0d6b3c18d1da9afc53bc7cdb2a8d5486df91b5a9830e9e07626c9ae281
+    hostname: ${RABBITMQ_HOSTNAME:-rabbitmq}
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-ec", "export RABBITMQ_DEFAULT_PASS=$$(cat /run/secrets/rabbit_password); exec docker-entrypoint.sh rabbitmq-server"]
     environment:
       RABBITMQ_DEFAULT_USER: passanorte
-      RABBITMQ_DEFAULT_PASS: passanorte
-    ports:
-      - "127.0.0.1:5672:5672"   # AMQP (loopback)
-      - "127.0.0.1:15672:15672" # management UI (loopback)
-    volumes:
-      - rabbitmqdata:/var/lib/rabbitmq
+    secrets: [rabbit_password]
+    networks: [data]
+    mem_limit: 768m
+    volumes: [rabbitmqdata:/var/lib/rabbitmq]
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 5s
       timeout: 3s
       retries: 10
 
-  dbgate:
-    # cliente web de administração dos bancos Postgres (debug local);
-    # conexões pré-configuradas via env (todas as bases passanorte_*)
-    image: dbgate/dbgate:alpine
-    ports:
-      - "127.0.0.1:8080:3000"
+
+  provision:
+    build: {context: ., target: runtime}
+    command: ["python", "scripts/provision_database.py"]
+    networks: [data]
     environment:
-      CONNECTIONS: con1
-      ENGINE_con1: postgres@dbgate-plugin-postgres
-      SERVER_con1: db
-      PORT_con1: "5432"
-      USER_con1: passanorte
-      PASSWORD_con1: passanorte
-      LABEL_con1: SPD Postgres
-      READONLY_con1: "false"
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      DB_CREDENTIAL_DIR: /run/secrets
+    secrets:
+      - postgres_password
+      - {source: database_auth_migrator, target: database-auth_migrator}
+      - {source: database_catalog_migrator, target: database-catalog_migrator}
+      - {source: database_gamification_migrator, target: database-gamification_migrator}
+      - {source: database_insights_migrator, target: database-insights_migrator}
+      - {source: database_notifications_migrator, target: database-notifications_migrator}
+      - {source: database_chatbot_migrator, target: database-chatbot_migrator}
+      - {source: database_benefits_migrator, target: database-benefits_migrator}
+      - {source: database_auth_runtime, target: database-auth_runtime}
+      - {source: database_catalog_runtime, target: database-catalog_runtime}
+      - {source: database_gamification_runtime, target: database-gamification_runtime}
+      - {source: database_insights_runtime, target: database-insights_runtime}
+      - {source: database_notifications_runtime, target: database-notifications_runtime}
+      - {source: database_chatbot_runtime, target: database-chatbot_runtime}
+      - {source: database_benefits_runtime, target: database-benefits_runtime}
     depends_on:
-      db: { condition: service_healthy }
+      db: {condition: service_healthy}
 
   migrate:
-    # one-shot: aplica as migrações Alembic (alembic upgrade head) de cada
-    # serviço no respectivo database antes dos serviços subirem. Roda depois do
-    # init-databases.sh (só cria os databases/extensões — este script não pode
-    # rodar Alembic, pois executa dentro do container do Postgres). Idempotente:
-    # revisões já aplicadas são puladas via alembic_version.
-    build: { context: ., dockerfile: Dockerfile }
-    command: bash scripts/apply_migrations.sh
+    build: {context: ., target: runtime}
+    command: ["bash", "scripts/apply_migrations.sh"]
+    networks: [data]
     environment:
-      DATABASE_URL_TEMPLATE: postgresql://passanorte:passanorte@db:5432/passanorte_{svc}
+      DB_CREDENTIAL_DIR: /run/secrets
+    secrets:
+      - {source: database_auth_migrator, target: database-auth_migrator}
+      - {source: database_catalog_migrator, target: database-catalog_migrator}
+      - {source: database_gamification_migrator, target: database-gamification_migrator}
+      - {source: database_insights_migrator, target: database-insights_migrator}
+      - {source: database_notifications_migrator, target: database-notifications_migrator}
+      - {source: database_chatbot_migrator, target: database-chatbot_migrator}
+      - {source: database_benefits_migrator, target: database-benefits_migrator}
     depends_on:
-      db: { condition: service_healthy }
+      provision: {condition: service_completed_successfully}
 
   seed:
-    # one-shot: cria o admin inicial (RF01) após as migrações. Idempotente
-    # (--if-missing): em boots seguintes apenas registra que já existe.
-    # Senha: $ADMIN_PASSWORD; se vazia, gera aleatória e imprime nos logs.
-    build: { context: ., dockerfile: Dockerfile }
-    command:
-      - python
-      - scripts/create_admin.py
-      - --if-missing
-      - --email
-      - ${ADMIN_EMAIL:-admin@passanorte.com}
-      - --password
-      - ${ADMIN_PASSWORD:-}
+    networks: [data]
+    build: {context: ., target: runtime}
+    command: ["python", "scripts/create_admin.py", "--if-missing", "--email", "${ADMIN_EMAIL:?Set ADMIN_EMAIL in .env}"]
     environment:
-      DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_auth
+      APP_ENV: ${APP_ENV:-production}
+      DATABASE_URL_FILE: /run/secrets/database_auth
+      RABBITMQ_URL_FILE: /run/secrets/rabbit_url
+      ADMIN_PASSWORD_FILE: /run/secrets/admin_password
+    secrets: [database_auth, rabbit_url, admin_password]
     depends_on:
-      db: { condition: service_healthy }
-      migrate: { condition: service_completed_successfully }
+      migrate: {condition: service_completed_successfully}
 
   auth:
-    build: { context: ., dockerfile: Dockerfile }
-    command: uvicorn services.auth.app.main:app --host 0.0.0.0 --port 8001
-    # portas dos serviços expostas apenas no loopback (debug local);
-    # clientes acessam tudo via Kong em :8000
-    ports: ["127.0.0.1:8001:8001"]
-    environment: &svc_env
-      PORT: "8001"
-      DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_auth
-      RABBITMQ_URL: amqp://passanorte:passanorte@rabbitmq:5672/
-      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
-      PII_ENCRYPTION_KEY: ${PII_ENCRYPTION_KEY:-}
-      AUTH_SERVICE_URL: http://auth:8001
-      CATALOG_SERVICE_URL: http://catalog:8002
-      VALIDATION_SERVICE_URL: http://validation:8003
-      GAMIFICATION_SERVICE_URL: http://gamification:8004
-      INSIGHTS_SERVICE_URL: http://insights:8005
-      NOTIFICATIONS_SERVICE_URL: http://notifications:8006
-      CHATBOT_SERVICE_URL: http://chatbot:8007
-    # admin inicial precisa existir antes do auth subir (seed depende do migrate)
+    <<: *service
+    command: ["uvicorn", "services.auth.app.main:app", "--host", "0.0.0.0", "--port", "8001"]
+    environment:
+      <<: *environment
+      INTERNAL_API_TOKEN_FILE: /run/secrets/internal_api_token
+      DATABASE_URL_FILE: /run/secrets/database_auth
+      JWT_ACTIVE_KID: ${JWT_ACTIVE_KID:?Set JWT_ACTIVE_KID}
+      JWT_PRIVATE_KEY_FILE: /run/secrets/jwt_private
+      PII_ENCRYPTION_KEY_FILE: /run/secrets/pii
+      PII_HMAC_KEY_FILE: /run/secrets/pii_hmac
     depends_on:
-      db: { condition: service_healthy }
-      seed: { condition: service_completed_successfully }
-      migrate: { condition: service_completed_successfully }
-      rabbitmq: { condition: service_healthy }
+      db: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+      seed: {condition: service_completed_successfully}
+    secrets: [database_auth, rabbit_url, internal_api_token, jwt_private, pii, pii_hmac]
     healthcheck:
-      <<: *healthcheck
-      test: ["CMD-SHELL", "python -c \"import os,urllib.request as u; u.urlopen('http://127.0.0.1:'+os.environ['PORT']+'/health')\""]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/ready')"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
 
   catalog:
-    build: { context: ., dockerfile: Dockerfile }
-    command: uvicorn services.catalog.app.main:app --host 0.0.0.0 --port 8002
-    ports: ["127.0.0.1:8002:8002"]
+    <<: *service
+    command: ["uvicorn", "services.catalog.app.main:app", "--host", "0.0.0.0", "--port", "8002"]
     environment:
-      <<: *svc_env
-      PORT: "8002"
-      DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_catalog
-    depends_on:
-      db: { condition: service_healthy }
-      migrate: { condition: service_completed_successfully }
-      rabbitmq: { condition: service_healthy }
+      <<: *environment
+      INTERNAL_API_TOKEN_FILE: /run/secrets/internal_api_token
+      DATABASE_URL_FILE: /run/secrets/database_catalog
+    secrets: [database_catalog, rabbit_url, internal_api_token]
     healthcheck:
-      <<: *healthcheck
-      test: ["CMD-SHELL", "python -c \"import os,urllib.request as u; u.urlopen('http://127.0.0.1:'+os.environ['PORT']+'/health')\""]
-
-  validation:
-    build: { context: ., dockerfile: Dockerfile }
-    command: uvicorn services.validation.app.main:app --host 0.0.0.0 --port 8003
-    ports: ["127.0.0.1:8003:8003"]
-    environment:
-      <<: *svc_env
-      PORT: "8003"
-      DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_validation
-    depends_on:
-      db: { condition: service_healthy }
-      migrate: { condition: service_completed_successfully }
-      rabbitmq: { condition: service_healthy }
-    healthcheck:
-      <<: *healthcheck
-      test: ["CMD-SHELL", "python -c \"import os,urllib.request as u; u.urlopen('http://127.0.0.1:'+os.environ['PORT']+'/health')\""]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/ready')"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
 
   gamification:
-    build: { context: ., dockerfile: Dockerfile }
-    command: uvicorn services.gamification.app.main:app --host 0.0.0.0 --port 8004
-    ports: ["127.0.0.1:8004:8004"]
+    <<: *service
+    command: ["uvicorn", "services.gamification.app.main:app", "--host", "0.0.0.0", "--port", "8004"]
     environment:
-      <<: *svc_env
-      PORT: "8004"
-      DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_gamification
-    depends_on:
-      db: { condition: service_healthy }
-      migrate: { condition: service_completed_successfully }
-      rabbitmq: { condition: service_healthy }
+      <<: *environment
+      INTERNAL_API_TOKEN_FILE: /run/secrets/internal_api_token
+      DATABASE_URL_FILE: /run/secrets/database_gamification
+    secrets: [database_gamification, rabbit_url, internal_api_token]
     healthcheck:
-      <<: *healthcheck
-      test: ["CMD-SHELL", "python -c \"import os,urllib.request as u; u.urlopen('http://127.0.0.1:'+os.environ['PORT']+'/health')\""]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/ready')"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
 
   insights:
-    build: { context: ., dockerfile: Dockerfile }
-    command: uvicorn services.insights.app.main:app --host 0.0.0.0 --port 8005
-    ports: ["127.0.0.1:8005:8005"]
+    <<: *service
+    command: ["uvicorn", "services.insights.app.main:app", "--host", "0.0.0.0", "--port", "8005"]
     environment:
-      <<: *svc_env
-      PORT: "8005"
-      DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_insights
-    depends_on:
-      db: { condition: service_healthy }
-      migrate: { condition: service_completed_successfully }
-      rabbitmq: { condition: service_healthy }
+      <<: *environment
+      DATABASE_URL_FILE: /run/secrets/database_insights
+    secrets: [database_insights, rabbit_url]
     healthcheck:
-      <<: *healthcheck
-      test: ["CMD-SHELL", "python -c \"import os,urllib.request as u; u.urlopen('http://127.0.0.1:'+os.environ['PORT']+'/health')\""]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8005/ready')"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
 
   notifications:
-    build: { context: ., dockerfile: Dockerfile }
-    command: uvicorn services.notifications.app.main:app --host 0.0.0.0 --port 8006
-    ports: ["127.0.0.1:8006:8006"]
+    <<: *service
+    command: ["uvicorn", "services.notifications.app.main:app", "--host", "0.0.0.0", "--port", "8006"]
     environment:
-      <<: *svc_env
-      PORT: "8006"
-      DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_notifications
-    depends_on:
-      db: { condition: service_healthy }
-      migrate: { condition: service_completed_successfully }
-      rabbitmq: { condition: service_healthy }
+      <<: *environment
+      DATABASE_URL_FILE: /run/secrets/database_notifications
+    secrets: [database_notifications, rabbit_url]
     healthcheck:
-      <<: *healthcheck
-      test: ["CMD-SHELL", "python -c \"import os,urllib.request as u; u.urlopen('http://127.0.0.1:'+os.environ['PORT']+'/health')\""]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8006/ready')"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
 
   chatbot:
-    build: { context: ., dockerfile: Dockerfile }
-    command: uvicorn services.chatbot.app.main:app --host 0.0.0.0 --port 8007
-    ports: ["127.0.0.1:8007:8007"]
+    profiles: [chatbot]
+    <<: *service
+    command: ["uvicorn", "services.chatbot.app.main:app", "--host", "0.0.0.0", "--port", "8007"]
     environment:
-      <<: *svc_env
-      PORT: "8007"
-      DATABASE_URL: postgresql://passanorte:passanorte@db:5432/passanorte_chatbot
+      <<: *environment
+      DATABASE_URL_FILE: /run/secrets/database_chatbot
       LLM_PROVIDER: ${LLM_PROVIDER:-stub}
-    depends_on:
-      db: { condition: service_healthy }
-      migrate: { condition: service_completed_successfully }
-      rabbitmq: { condition: service_healthy }
+      LLM_OLLAMA_URL: ${LLM_OLLAMA_URL:-http://host.docker.internal:11434}
+      LLM_OLLAMA_MODEL: ${LLM_OLLAMA_MODEL:-llama3.1}
+    secrets: [database_chatbot, rabbit_url]
     healthcheck:
-      <<: *healthcheck
-      test: ["CMD-SHELL", "python -c \"import os,urllib.request as u; u.urlopen('http://127.0.0.1:'+os.environ['PORT']+'/health')\""]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8007/ready')"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+
+  benefits:
+    <<: *service
+    command: ["uvicorn", "services.benefits.app.main:app", "--host", "0.0.0.0", "--port", "8008"]
+    environment:
+      <<: *environment
+      DATABASE_URL_FILE: /run/secrets/database_benefits
+      INTERNAL_API_TOKEN_FILE: /run/secrets/internal_api_token
+    secrets: [database_benefits, rabbit_url, internal_api_token]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8008/ready')"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
 
   kong:
-    # borda única em :8000 — config declarativa DB-less renderizada no boot
-    # (kong/entrypoint-render.sh substitui __JWT_SECRET__/__JWT_ISSUER__ do .env)
-    image: kong:3.9
+    image: kong:3.9.1@sha256:76c14b93e989f7f4418039f7f9789ca32564016211c86ac1a18022f4788e7b9c
+    restart: unless-stopped
     entrypoint: ["/bin/sh", "/kong/entrypoint-render.sh"]
     environment:
       KONG_DATABASE: "off"
       KONG_DECLARATIVE_CONFIG: /tmp/kong.yml
       KONG_PROXY_ACCESS_LOG: /dev/stdout
-      KONG_ADMIN_ACCESS_LOG: /dev/stdout
-      KONG_PROXY_ERROR_ACCESS_LOG: /dev/stderr
-      KONG_ADMIN_ERROR_ACCESS_LOG: /dev/stderr
-      # Admin API desligada: em modo ro DB-less toda a config vem do arquivo;
-      # para deck/dashboard, troque por "localhost:8001"
+      KONG_PROXY_ERROR_LOG: /dev/stderr
       KONG_ADMIN_LISTEN: "off"
-      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
-      JWT_ISSUER: ${JWT_ISSUER:-passanorte}
-    ports:
-      - "8000:8000"
+      KONG_PROXY_LISTEN: "0.0.0.0:8443 ssl"
+      KONG_SSL_CERT: /run/secrets/edge_cert
+      KONG_SSL_CERT_KEY: /run/secrets/edge_key
+      EDGE_CORS_ORIGIN: ${EDGE_CORS_ORIGIN:-https://localhost:8443}
+      JWT_PUBLIC_KEYS_DIR: /run/public-keys
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    networks: [edge]
+    secrets: [edge_cert, edge_key]
+    ports: ["8443:8443"]
     volumes:
       - ./kong/kong.yml:/kong/kong.yml:ro
       - ./kong/entrypoint-render.sh:/kong/entrypoint-render.sh:ro
+      - ${SECRETS_DIR:-./secrets}/public:/run/public-keys:ro
     depends_on:
-      db: { condition: service_healthy }
-      auth: { condition: service_healthy }
-      catalog: { condition: service_healthy }
-      validation: { condition: service_healthy }
-      gamification: { condition: service_healthy }
-      insights: { condition: service_healthy }
-      notifications: { condition: service_healthy }
-      chatbot: { condition: service_healthy }
+      auth: {condition: service_healthy}
+      catalog: {condition: service_healthy}
+      gamification: {condition: service_healthy}
+      insights: {condition: service_healthy}
+      notifications: {condition: service_healthy}
+      benefits: {condition: service_healthy}
+
+networks:
+  edge: {}
+  data:
+    internal: true
 
 volumes:
-  pgdata:
+  pgdata_s2:
   rabbitmqdata:
+
+secrets:
+  postgres_password:
+    file: ${SECRETS_DIR:-./secrets}/postgres-password
+  rabbit_password:
+    file: ${SECRETS_DIR:-./secrets}/rabbit-password
+  rabbit_url:
+    file: ${SECRETS_DIR:-./secrets}/rabbit-url
+  admin_password:
+    file: ${SECRETS_DIR:-./secrets}/admin-password
+  jwt_private:
+    file: ${SECRETS_DIR:-./secrets}/jwt-private.key
+  pii:
+    file: ${SECRETS_DIR:-./secrets}/pii.key
+  pii_hmac:
+    file: ${SECRETS_DIR:-./secrets}/pii-hmac.key
+  internal_api_token:
+    file: ${SECRETS_DIR:-./secrets}/internal-api-token
+  edge_cert:
+    file: ${SECRETS_DIR:-./secrets}/edge.crt
+  edge_key:
+    file: ${SECRETS_DIR:-./secrets}/edge.key
+  database_auth:
+    file: ${SECRETS_DIR:-./secrets}/database-auth_runtime
+  database_catalog:
+    file: ${SECRETS_DIR:-./secrets}/database-catalog_runtime
+  database_gamification:
+    file: ${SECRETS_DIR:-./secrets}/database-gamification_runtime
+  database_insights:
+    file: ${SECRETS_DIR:-./secrets}/database-insights_runtime
+  database_notifications:
+    file: ${SECRETS_DIR:-./secrets}/database-notifications_runtime
+  database_chatbot:
+    file: ${SECRETS_DIR:-./secrets}/database-chatbot_runtime
+  database_benefits:
+    file: ${SECRETS_DIR:-./secrets}/database-benefits_runtime
+  database_auth_migrator:
+    file: ${SECRETS_DIR:-./secrets}/database-auth_migrator
+  database_catalog_migrator:
+    file: ${SECRETS_DIR:-./secrets}/database-catalog_migrator
+  database_gamification_migrator:
+    file: ${SECRETS_DIR:-./secrets}/database-gamification_migrator
+  database_insights_migrator:
+    file: ${SECRETS_DIR:-./secrets}/database-insights_migrator
+  database_notifications_migrator:
+    file: ${SECRETS_DIR:-./secrets}/database-notifications_migrator
+  database_chatbot_migrator:
+    file: ${SECRETS_DIR:-./secrets}/database-chatbot_migrator
+  database_benefits_migrator:
+    file: ${SECRETS_DIR:-./secrets}/database-benefits_migrator
+  database_auth_runtime:
+    file: ${SECRETS_DIR:-./secrets}/database-auth_runtime
+  database_catalog_runtime:
+    file: ${SECRETS_DIR:-./secrets}/database-catalog_runtime
+  database_gamification_runtime:
+    file: ${SECRETS_DIR:-./secrets}/database-gamification_runtime
+  database_insights_runtime:
+    file: ${SECRETS_DIR:-./secrets}/database-insights_runtime
+  database_notifications_runtime:
+    file: ${SECRETS_DIR:-./secrets}/database-notifications_runtime
+  database_chatbot_runtime:
+    file: ${SECRETS_DIR:-./secrets}/database-chatbot_runtime
+  database_benefits_runtime:
+    file: ${SECRETS_DIR:-./secrets}/database-benefits_runtime

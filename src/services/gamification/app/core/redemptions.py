@@ -6,6 +6,7 @@ import logging
 from datetime import UTC, datetime
 
 from sqlalchemy import update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from services.gamification.app.models.enrollment import CodeStatus, RedeemCode
@@ -28,6 +29,7 @@ def redeem(db: Session, code: str, *, actor_id: str) -> dict:
         .where(RedeemCode.code == code, RedeemCode.status == CodeStatus.issued)
         .values(status=CodeStatus.redeemed, redeemed_at=datetime.now(UTC))
     )
+    assert isinstance(result, CursorResult)
     if result.rowcount == 0:
         raise ApiError(code="code_already_used", message="Código já utilizado.", status_code=409)
 
@@ -37,6 +39,7 @@ def redeem(db: Session, code: str, *, actor_id: str) -> dict:
         .where(Prize.id == record.prize_id, Prize.stock_quantity > 0)
         .values(stock_quantity=Prize.stock_quantity - 1)
     )
+    assert isinstance(stock_result, CursorResult)
     if stock_result.rowcount == 0:
         db.rollback()
         raise ApiError(code="prize_out_of_stock", message="Brinde sem estoque disponível.", status_code=409)

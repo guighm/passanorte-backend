@@ -1,7 +1,7 @@
 """Modelos de identidade do serviço auth (T015, data-model.md).
 
 Regras de unicidade: email único; CPF OU passaporte único via hash HMAC
-(FR-006) — os valores sensíveis ficam criptografados (AES-256-GCM, RNF08).
+(FR-006) — os valores sensíveis ficam criptografados (Fernet, RNF08).
 """
 
 from __future__ import annotations
@@ -9,20 +9,26 @@ from __future__ import annotations
 import enum
 import uuid
 
-from sqlalchemy import Boolean, Enum, ForeignKey, String, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum, ForeignKey, Index, String, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from shared.db import Base
+from services.auth.app.db import Base
 
 
 class UserRole(str, enum.Enum):
     admin = "admin"
-    employee = "employee"
+    supplier = "supplier"
     tourist = "tourist"
 
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint("role != 'supplier' OR partner_id IS NOT NULL OR NOT is_active",
+                        name="ck_active_supplier_partner"),
+        Index("uq_users_email_lower", text("lower(email)"), unique=True),
+        Index("uq_users_normalized_document", text("coalesce(cpf_hash, passport_hash)"), unique=True),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     role: Mapped[UserRole] = mapped_column(Enum(UserRole, name="user_role"), nullable=False)
@@ -38,6 +44,7 @@ class User(Base):
     passport_hash: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
     country_of_origin: Mapped[str] = mapped_column(String(120), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    partner_id: Mapped[str | None] = mapped_column(String(36), index=True)
 
 
 class TouristProfile(Base):
@@ -46,6 +53,8 @@ class TouristProfile(Base):
     __tablename__ = "tourist_profiles"
 
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), primary_key=True)
+    consent_version: Mapped[str | None] = mapped_column(String(40))
+    consent_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
 
 
 class TouristInterest(Base):

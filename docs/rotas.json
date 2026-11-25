@@ -1,0 +1,416 @@
+[
+  {
+    "service": "auth",
+    "method": "GET",
+    "path": "/health",
+    "operation_id": "health_health_get"
+  },
+  {
+    "service": "auth",
+    "method": "POST",
+    "path": "/api/v1/tourists",
+    "operation_id": "register_tourist_api_v1_tourists_post"
+  },
+  {
+    "service": "auth",
+    "method": "GET",
+    "path": "/api/v1/internal/users/{user_id}",
+    "operation_id": "get_public_user_api_v1_internal_users__user_id__get"
+  },
+  {
+    "service": "auth",
+    "method": "POST",
+    "path": "/api/v1/session",
+    "operation_id": "login_api_v1_session_post"
+  },
+  {
+    "service": "auth",
+    "method": "DELETE",
+    "path": "/api/v1/session",
+    "operation_id": "logout_api_v1_session_delete"
+  },
+  {
+    "service": "auth",
+    "method": "POST",
+    "path": "/api/v1/session/refresh",
+    "operation_id": "refresh_api_v1_session_refresh_post"
+  },
+  {
+    "service": "auth",
+    "method": "GET",
+    "path": "/api/v1/me",
+    "operation_id": "get_me_api_v1_me_get"
+  },
+  {
+    "service": "auth",
+    "method": "PATCH",
+    "path": "/api/v1/me",
+    "operation_id": "update_me_api_v1_me_patch"
+  },
+  {
+    "service": "auth",
+    "method": "GET",
+    "path": "/api/v1/me/interests",
+    "operation_id": "get_interests_api_v1_me_interests_get"
+  },
+  {
+    "service": "auth",
+    "method": "PUT",
+    "path": "/api/v1/me/interests",
+    "operation_id": "set_interests_api_v1_me_interests_put"
+  },
+  {
+    "service": "auth",
+    "method": "GET",
+    "path": "/api/v1/employees",
+    "operation_id": "list_employees_api_v1_employees_get"
+  },
+  {
+    "service": "auth",
+    "method": "POST",
+    "path": "/api/v1/employees",
+    "operation_id": "create_employee_api_v1_employees_post"
+  },
+  {
+    "service": "auth",
+    "method": "PATCH",
+    "path": "/api/v1/employees/{employee_id}",
+    "operation_id": "update_employee_api_v1_employees__employee_id__patch"
+  },
+  {
+    "service": "auth",
+    "method": "DELETE",
+    "path": "/api/v1/employees/{employee_id}",
+    "operation_id": "revoke_employee_api_v1_employees__employee_id__delete"
+  },
+  {
+    "service": "catalog",
+    "method": "GET",
+    "path": "/health",
+    "operation_id": "health_health_get"
+  },
+  {
+    "service": "catalog",
+    "method": "GET",
+    "path": "/api/v1/categories",
+    "operation_id": "list_categories_api_v1_categories_get"
+  },
+  {
+    "service": "catalog",
+    "method": "POST",
+    "path": "/api/v1/categories",
+    "operation_id": "create_category_api_v1_categories_post"
+  },
+  {
+    "service": "catalog",
+    "method": "GET",
+    "path": "/api/v1/tourist-spots",
+    "operation_id": "list_spots_api_v1_tourist_spots_get"
+  },
+  {
+    "service": "catalog",
+    "method": "POST",
+    "path": "/api/v1/tourist-spots",
+    "operation_id": "create_spot_api_v1_tourist_spots_post"
+  },
+  {
+    "service": "catalog",
+    "method": "GET",
+    "path": "/api/v1/tourist-spots/{spot_id}",
+    "operation_id": "get_spot_api_v1_tourist_spots__spot_id__get"
+  },
+  {
+    "service": "catalog",
+    "method": "PATCH",
+    "path": "/api/v1/tourist-spots/{spot_id}",
+    "operation_id": "update_spot_api_v1_tourist_spots__spot_id__patch"
+  },
+  {
+    "service": "catalog",
+    "method": "DELETE",
+    "path": "/api/v1/tourist-spots/{spot_id}",
+    "operation_id": "remove_spot_api_v1_tourist_spots__spot_id__delete"
+  },
+  {
+    "service": "catalog",
+    "method": "GET",
+    "path": "/api/v1/tourist-spots/{spot_id}/external-links",
+    "operation_id": "get_external_links_api_v1_tourist_spots__spot_id__external_links_get"
+  },
+  {
+    "service": "catalog",
+    "method": "POST",
+    "path": "/api/v1/internal/tourist-spots",
+    "operation_id": "internal_create_spot_api_v1_internal_tourist_spots_post"
+  },
+  {
+    "service": "catalog",
+    "method": "GET",
+    "path": "/api/v1/internal/tourist-spots",
+    "operation_id": "internal_list_spots_api_v1_internal_tourist_spots_get"
+  },
+  {
+    "service": "catalog",
+    "method": "GET",
+    "path": "/api/v1/internal/tourist-spots/{spot_id}",
+    "operation_id": "internal_spot_snapshot_api_v1_internal_tourist_spots__spot_id__get"
+  },
+  {
+    "service": "catalog",
+    "method": "PUT",
+    "path": "/api/v1/tourist-spots/{spot_id}/schedule",
+    "operation_id": "set_schedule_api_v1_tourist_spots__spot_id__schedule_put"
+  },
+  {
+    "service": "catalog",
+    "method": "PATCH",
+    "path": "/api/v1/tourist-spots/{spot_id}/status",
+    "operation_id": "set_status_api_v1_tourist_spots__spot_id__status_patch"
+  },
+  {
+    "service": "catalog",
+    "method": "GET",
+    "path": "/api/v1/admin/tourist-spots/{spot_id}",
+    "operation_id": "get_spot_admin_api_v1_admin_tourist_spots__spot_id__get"
+  },
+  {
+    "service": "catalog",
+    "method": "GET",
+    "path": "/api/v1/events",
+    "operation_id": "list_events_api_v1_events_get"
+  },
+  {
+    "service": "catalog",
+    "method": "POST",
+    "path": "/api/v1/events",
+    "operation_id": "create_event_api_v1_events_post"
+  },
+  {
+    "service": "catalog",
+    "method": "PATCH",
+    "path": "/api/v1/events/{event_id}",
+    "operation_id": "update_event_api_v1_events__event_id__patch"
+  },
+  {
+    "service": "catalog",
+    "method": "DELETE",
+    "path": "/api/v1/events/{event_id}",
+    "operation_id": "remove_event_api_v1_events__event_id__delete"
+  },
+  {
+    "service": "catalog",
+    "method": "POST",
+    "path": "/api/v1/internal/events/notify-subscribers",
+    "operation_id": "notify_subscribers_api_v1_internal_events_notify_subscribers_post"
+  },
+  {
+    "service": "validation",
+    "method": "GET",
+    "path": "/health",
+    "operation_id": "health_health_get"
+  },
+  {
+    "service": "validation",
+    "method": "GET",
+    "path": "/api/v1/visits",
+    "operation_id": "list_visits_api_v1_visits_get"
+  },
+  {
+    "service": "validation",
+    "method": "POST",
+    "path": "/api/v1/visits",
+    "operation_id": "mark_visit_api_v1_visits_post"
+  },
+  {
+    "service": "validation",
+    "method": "GET",
+    "path": "/api/v1/visits/{spot_id}",
+    "operation_id": "get_visit_api_v1_visits__spot_id__get"
+  },
+  {
+    "service": "validation",
+    "method": "POST",
+    "path": "/api/v1/internal/visits/propagate",
+    "operation_id": "propagate_visit_api_v1_internal_visits_propagate_post"
+  },
+  {
+    "service": "gamification",
+    "method": "GET",
+    "path": "/health",
+    "operation_id": "health_health_get"
+  },
+  {
+    "service": "gamification",
+    "method": "GET",
+    "path": "/api/v1/routes",
+    "operation_id": "list_routes_api_v1_routes_get"
+  },
+  {
+    "service": "gamification",
+    "method": "POST",
+    "path": "/api/v1/routes",
+    "operation_id": "create_route_api_v1_routes_post"
+  },
+  {
+    "service": "gamification",
+    "method": "PATCH",
+    "path": "/api/v1/routes/{route_id}",
+    "operation_id": "update_route_api_v1_routes__route_id__patch"
+  },
+  {
+    "service": "gamification",
+    "method": "DELETE",
+    "path": "/api/v1/routes/{route_id}",
+    "operation_id": "remove_route_api_v1_routes__route_id__delete"
+  },
+  {
+    "service": "gamification",
+    "method": "GET",
+    "path": "/api/v1/prizes",
+    "operation_id": "list_prizes_api_v1_prizes_get"
+  },
+  {
+    "service": "gamification",
+    "method": "POST",
+    "path": "/api/v1/prizes",
+    "operation_id": "create_prize_api_v1_prizes_post"
+  },
+  {
+    "service": "gamification",
+    "method": "PATCH",
+    "path": "/api/v1/prizes/{prize_id}/stock",
+    "operation_id": "update_stock_api_v1_prizes__prize_id__stock_patch"
+  },
+  {
+    "service": "gamification",
+    "method": "GET",
+    "path": "/api/v1/badges",
+    "operation_id": "list_badges_api_v1_badges_get"
+  },
+  {
+    "service": "gamification",
+    "method": "GET",
+    "path": "/api/v1/redeem-codes",
+    "operation_id": "list_redeem_codes_api_v1_redeem_codes_get"
+  },
+  {
+    "service": "gamification",
+    "method": "POST",
+    "path": "/api/v1/routes/{route_id}/enrollments",
+    "operation_id": "enroll_api_v1_routes__route_id__enrollments_post"
+  },
+  {
+    "service": "gamification",
+    "method": "GET",
+    "path": "/api/v1/enrollments",
+    "operation_id": "list_enrollments_api_v1_enrollments_get"
+  },
+  {
+    "service": "gamification",
+    "method": "GET",
+    "path": "/api/v1/enrollments/{route_id}",
+    "operation_id": "get_enrollment_api_v1_enrollments__route_id__get"
+  },
+  {
+    "service": "gamification",
+    "method": "POST",
+    "path": "/api/v1/redemptions",
+    "operation_id": "create_redemption_api_v1_redemptions_post"
+  },
+  {
+    "service": "insights",
+    "method": "GET",
+    "path": "/health",
+    "operation_id": "health_health_get"
+  },
+  {
+    "service": "insights",
+    "method": "GET",
+    "path": "/api/v1/heatmap",
+    "operation_id": "heatmap_api_v1_heatmap_get"
+  },
+  {
+    "service": "insights",
+    "method": "GET",
+    "path": "/api/v1/accesses",
+    "operation_id": "accesses_api_v1_accesses_get"
+  },
+  {
+    "service": "insights",
+    "method": "GET",
+    "path": "/api/v1/rankings/tourist-spots",
+    "operation_id": "ranking_api_v1_rankings_tourist_spots_get"
+  },
+  {
+    "service": "insights",
+    "method": "GET",
+    "path": "/api/v1/distributions/country-of-origin",
+    "operation_id": "country_distribution_api_v1_distributions_country_of_origin_get"
+  },
+  {
+    "service": "insights",
+    "method": "GET",
+    "path": "/api/v1/distributions/interests",
+    "operation_id": "interests_distribution_api_v1_distributions_interests_get"
+  },
+  {
+    "service": "notifications",
+    "method": "GET",
+    "path": "/health",
+    "operation_id": "health_health_get"
+  },
+  {
+    "service": "notifications",
+    "method": "GET",
+    "path": "/api/v1/subscriptions",
+    "operation_id": "list_subscriptions_api_v1_subscriptions_get"
+  },
+  {
+    "service": "notifications",
+    "method": "PUT",
+    "path": "/api/v1/subscriptions",
+    "operation_id": "replace_subscriptions_api_v1_subscriptions_put"
+  },
+  {
+    "service": "notifications",
+    "method": "GET",
+    "path": "/api/v1/notifications",
+    "operation_id": "list_notifications_api_v1_notifications_get"
+  },
+  {
+    "service": "notifications",
+    "method": "PATCH",
+    "path": "/api/v1/notifications/{notification_id}/read",
+    "operation_id": "mark_read_api_v1_notifications__notification_id__read_patch"
+  },
+  {
+    "service": "chatbot",
+    "method": "GET",
+    "path": "/health",
+    "operation_id": "health_health_get"
+  },
+  {
+    "service": "chatbot",
+    "method": "GET",
+    "path": "/api/v1/conversations",
+    "operation_id": "list_conversations_api_v1_conversations_get"
+  },
+  {
+    "service": "chatbot",
+    "method": "POST",
+    "path": "/api/v1/conversations",
+    "operation_id": "create_conversation_api_v1_conversations_post"
+  },
+  {
+    "service": "chatbot",
+    "method": "GET",
+    "path": "/api/v1/conversations/{conversation_id}",
+    "operation_id": "get_conversation_api_v1_conversations__conversation_id__get"
+  },
+  {
+    "service": "chatbot",
+    "method": "POST",
+    "path": "/api/v1/conversations/{conversation_id}/messages",
+    "operation_id": "send_message_api_v1_conversations__conversation_id__messages_post"
+  }
+]

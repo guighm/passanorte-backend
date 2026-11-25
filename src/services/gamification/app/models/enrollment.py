@@ -7,10 +7,9 @@ import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 
-from services.gamification.app.models.route import Route
-from shared.db import Base
+from services.gamification.app.db import Base
 
 
 class EnrollmentStatus(str, enum.Enum):
@@ -30,15 +29,12 @@ class RouteEnrollment(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id: Mapped[str] = mapped_column(String(36), index=True)
-    route_id: Mapped[str] = mapped_column(ForeignKey("routes.id"), index=True)
+    route_id: Mapped[str] = mapped_column(String(36), index=True)
     status: Mapped[EnrollmentStatus] = mapped_column(
         String(16), default=EnrollmentStatus.in_progress
     )
     started_at: Mapped[object] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
     completed_at: Mapped[object] = mapped_column(DateTime, nullable=True)
-
-    route: Mapped[Route] = relationship()
-
 
 class Badge(Base):
     __tablename__ = "badges"

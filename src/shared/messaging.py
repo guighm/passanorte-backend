@@ -1,19 +1,4 @@
-"""Barramento de eventos — RabbitMQ via aio-pika (D-05).
-
-Substitui o HTTP fire-and-forget entre serviços: os produtores fazem
-`publish()` (sync, nunca levanta, nunca bloqueia — semântica idêntica à do
-antigo fire-and-forget) e os consumidores rodam dentro do processo FastAPI,
-iniciados no lifespan. Um event loop daemon é dono de toda a conexão AMQP
-(1 RobustConnection, reconexão automática + redeclaração da topologia).
-Sem `RABBITMQ_URL` o módulo fica degradado: publicação vira no-op com um
-warn único e consumidores não iniciam (dev sem docker — nada quebra).
-
-Topologia: exchange topic `passanorte.events` (routing key = tipo do
-evento), DLX `passanorte.dlx` e DLQ `passanorte.dlq` (bind `#`). Filas dos
-consumers são durable com dead-lettering; falha na 1ª entrega → requeue,
-na redelivery → DLQ (equivalente ao MAX_ATTEMPTS=2 do HTTP antigo).
-"""
-
+"""RabbitMQ transport with a transactional outbox and per-consumer inbox."""
 from __future__ import annotations
 
 import asyncio
@@ -23,13 +8,17 @@ import uuid
 from collections.abc import Awaitable, Callable
 from concurrent.futures import Future
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import aio_pika
 from aio_pika import DeliveryMode, ExchangeType
 from aio_pika.abc import AbstractIncomingMessage, AbstractQueue
-from pydantic import BaseModel, Field, ValidationError
+from pamqp.commands import Basic
+from pydantic import AliasChoices, BaseModel, Field, ValidationError
+from sqlalchemy.orm import Session
 
+from shared import delivery
+from shared.db import service_session_factory
 from shared.logging import get_request_id, log_event, new_request_id, request_id_var
 
 logger = logging.getLogger("messaging")
@@ -47,10 +36,15 @@ class EventEnvelope(BaseModel):
     """Envelope do evento: request_id propaga o correlation ID entre serviços."""
 
     event_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
-    type: str
+    type: str = Field(validation_alias=AliasChoices("event_type", "type"), serialization_alias="event_type")
     occurred_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
-    request_id: str = ""
-    data: dict
+    request_id: str = Field(default="", validation_alias=AliasChoices("correlation_id", "request_id"),
+                            serialization_alias="correlation_id")
+    data: dict = Field(validation_alias=AliasChoices("payload", "data"), serialization_alias="payload")
+    schema_version: int = Field(default=1, ge=1, le=1)
+    producer: str = "legacy"
+    aggregate_id: str | None = None
+    aggregate_version: int | None = None
 
 
 @dataclass(frozen=True)
@@ -59,7 +53,8 @@ class ConsumerSpec:
 
     service: str
     routing_key: str
-    handler: Callable[[dict], None]
+    handler: Callable[..., object]
+    transactional: bool = False
 
     def queue_name(self) -> str:
         return f"passanorte.{self.service}.{self.routing_key}"
@@ -72,6 +67,7 @@ class _State:
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.url = ""
+        self.domain = ""
         self.loop: asyncio.AbstractEventLoop | None = None
         self.thread: threading.Thread | None = None
         self.stopping = False
@@ -90,9 +86,10 @@ class _State:
 _state = _State()
 
 
-def configure(url: str | None) -> None:
+def configure(url: str | None, domain: str = "") -> None:
     """Define a URL do broker (chamada no lifespan). Vazio → degradado."""
     _state.url = (url or "").strip()
+    _state.domain = domain
 
 
 def set_publisher(fn: PublisherFn | None) -> None:
@@ -125,6 +122,76 @@ def publish(event_type: str, data: dict, request_id: str | None = None) -> None:
     future.add_done_callback(_log_scheduling_error)
 
 
+def enqueue(db: Session | None, event_type: str, data: dict) -> None:
+    """Persist the event within the caller's transaction."""
+    if db is None or _state.publisher_override is not None:
+        publish(event_type, data)
+        return
+    envelope = EventEnvelope(
+        type=event_type, data=data, producer=_state.domain, request_id=get_request_id(),
+        aggregate_id=data.get("source_id") or data.get("tourist_spot_id") or data.get("user_id"),
+    )
+    db.execute(delivery.outbox_table(_state.domain).insert().values(
+        event_id=envelope.event_id, created_at=datetime.now(UTC), available_at=datetime.now(UTC),
+        envelope=envelope.model_dump(by_alias=True),
+    ))
+
+
+def _relay_once(domain: str) -> None:
+    if not broker_ready():
+        return
+    loop = _state.loop
+    if loop is None:
+        return
+    table = delivery.outbox_table(domain)
+    with service_session_factory().begin() as session:
+        row = session.execute(
+            table.select().where(table.c.available_at <= datetime.now(UTC))
+            .order_by(table.c.created_at, table.c.event_id).limit(1).with_for_update(skip_locked=True)
+        ).first()
+        if row is None:
+            return
+        event = EventEnvelope.model_validate(row.envelope)
+        future = asyncio.run_coroutine_threadsafe(_publish_confirmed(event), loop)
+        try:
+            future.result(timeout=5)
+        except Exception as exc:
+            future.cancel()
+            session.execute(table.update().where(table.c.event_id == event.event_id).values(
+                available_at=datetime.now(UTC) + timedelta(seconds=5),
+            ))
+            log_event(logger, "outbox_retry", event_id=event.event_id, error=type(exc).__name__)
+        else:
+            session.execute(table.delete().where(table.c.event_id == event.event_id))
+
+
+async def relay(domain: str) -> None:
+    while True:
+        try:
+            await asyncio.to_thread(_relay_once, domain)
+        except Exception as exc:
+            log_event(logger, "outbox_relay_failed", error=type(exc).__name__)
+        await asyncio.sleep(0.25)
+
+
+def broker_ready() -> bool:
+    connection = _state.connection
+    return bool(connection and connection.connected.is_set() and _state.connected.is_set())
+
+
+async def _publish_confirmed(envelope: EventEnvelope) -> None:
+    exchange = _state.publish_exchange
+    if exchange is None:
+        raise ConnectionError("Broker is not ready")
+    confirmation = await exchange.publish(
+        aio_pika.Message(body=envelope.model_dump_json(by_alias=True).encode(),
+                         delivery_mode=DeliveryMode.PERSISTENT, message_id=envelope.event_id),
+        routing_key=envelope.type, mandatory=True, timeout=4,
+    )
+    if not isinstance(confirmation, Basic.Ack):
+        raise ConnectionError("Broker did not confirm publication")
+
+
 def start_consumers(specs: list[ConsumerSpec]) -> None:
     """Registra consumers (substitui os anteriores) e garante a conexão."""
     _state.consumers = list(specs)
@@ -146,6 +213,12 @@ def stop() -> None:
         pass
     loop.call_soon_threadsafe(loop.stop)
     thread.join(timeout=5)
+    if not thread.is_alive():
+        _state.connection = None
+        _state.publish_exchange = None
+        _state.tasks.clear()
+        _state.connected = asyncio.Event()
+        _state.stopping = False
 
 
 def _warn_degraded_once() -> None:
@@ -158,7 +231,7 @@ def _warn_degraded_once() -> None:
 
 def _log_scheduling_error(future: Future[None]) -> None:
     if not future.cancelled() and (exc := future.exception()) is not None:
-        log_event(logger, "event_publish_failed", error=f"{type(exc).__name__}: {exc}")
+        log_event(logger, "event_publish_failed", error=type(exc).__name__)
 
 
 def _ensure_supervisor() -> asyncio.AbstractEventLoop | None:
@@ -203,20 +276,31 @@ async def _supervisor() -> None:
             )
         except Exception as exc:  # noqa: BLE001 — disponibilidade é tolerância a falhas
             _state.connected.clear()
-            log_event(logger, "event_broker_unavailable", error=f"{type(exc).__name__}: {exc}")
+            log_event(logger, "event_broker_unavailable", error=type(exc).__name__)
             await asyncio.sleep(RECONNECT_INTERVAL)
             continue
         _state.connection = connection
-        # publisher confirms já vêm ligados por default (publisher_confirms=True)
-        channel = await connection.channel()
-        _state.publish_exchange = await channel.declare_exchange(
-            EXCHANGE_EVENTS, ExchangeType.TOPIC, durable=True
-        )
-        dlx = await channel.declare_exchange(EXCHANGE_DLX, ExchangeType.TOPIC, durable=True)
-        dlq = await channel.declare_queue(QUEUE_DLQ, durable=True)
-        await dlq.bind(dlx, routing_key="#")
-        for spec in _state.consumers:
-            _state.tasks.add(asyncio.create_task(_consume_forever(connection, spec)))
+        try:
+            # publisher confirms já vêm ligados por default (publisher_confirms=True)
+            channel = await connection.channel(on_return_raises=True)
+            _state.publish_exchange = await channel.declare_exchange(
+                EXCHANGE_EVENTS, ExchangeType.TOPIC, durable=True
+            )
+            dlx = await channel.declare_exchange(EXCHANGE_DLX, ExchangeType.TOPIC, durable=True)
+            dlq = await channel.declare_queue(QUEUE_DLQ, durable=True)
+            await dlq.bind(dlx, routing_key="#")
+            for consumer, routing_key in (
+                ("insights", "visit.validated"), ("insights", "access.registered"), ("insights", "tourist.login"),
+                ("notifications", "notification.dispatch"), ("chatbot", "catalog.index.refresh"),
+            ):
+                await _declare_queue(channel, f"passanorte.{consumer}.{routing_key}", routing_key)
+            for spec in _state.consumers:
+                await _consume_forever(connection, spec)
+        except Exception as exc:
+            await connection.close()
+            log_event(logger, "event_topology_unavailable", error=type(exc).__name__)
+            await asyncio.sleep(RECONNECT_INTERVAL)
+            continue
         log_event(logger, "event_broker_connected", exchange=EXCHANGE_EVENTS)
         _state.connected.set()
         while not connection.is_closed and not _state.stopping:
@@ -225,10 +309,7 @@ async def _supervisor() -> None:
             return
         _state.connected.clear()  # queda: publishes aguardam a reconexão
         log_event(logger, "event_broker_disconnected")
-        for task in list(_state.tasks):
-            task.cancel()
-        await asyncio.gather(*_state.tasks, return_exceptions=True)
-        _state.tasks.clear()
+
 
 
 async def _consume_forever(
@@ -237,16 +318,21 @@ async def _consume_forever(
 ) -> None:
     channel = await connection.channel()
     await channel.set_qos(prefetch_count=1)
-    queue: AbstractQueue = await channel.declare_queue(
-        spec.queue_name(),
+    queue = await _declare_queue(channel, spec.queue_name(), spec.routing_key)
+    await queue.consume(_make_callback(spec))
+
+
+async def _declare_queue(channel, name: str, routing_key: str) -> AbstractQueue:
+    queue = await channel.declare_queue(
+        name,
         durable=True,
         arguments={
             "x-dead-letter-exchange": EXCHANGE_DLX,
-            "x-dead-letter-routing-key": spec.queue_name(),
+            "x-dead-letter-routing-key": name,
         },
     )
-    await queue.bind(EXCHANGE_EVENTS, routing_key=spec.routing_key)
-    await queue.consume(_make_callback(spec))
+    await queue.bind(EXCHANGE_EVENTS, routing_key=routing_key)
+    return queue
 
 
 def _make_callback(spec: ConsumerSpec) -> Callable[[AbstractIncomingMessage], Awaitable[None]]:
@@ -258,23 +344,32 @@ def _make_callback(spec: ConsumerSpec) -> Callable[[AbstractIncomingMessage], Aw
                 logger,
                 "event_poison",
                 queue=spec.queue_name(),
-                body_preview=message.body[:200].decode(errors="replace"),
             )
             await _finish(message, ack=False, requeue=False)  # veneno → DLQ
             return
         request_id_var.set(envelope.request_id or new_request_id())
         try:
-            await asyncio.to_thread(spec.handler, envelope.data)
+            if envelope.type != spec.routing_key:
+                await _finish(message, ack=False, requeue=False)
+                return
+            if spec.transactional:
+                await asyncio.to_thread(
+                    delivery.consume, spec.service, spec.queue_name(), envelope.event_id, envelope.data, spec.handler,
+                )
+            else:
+                await asyncio.to_thread(spec.handler, envelope.data)
         except Exception as exc:  # noqa: BLE001 — handler não pode derrubar o consumer
             log_event(
                 logger,
                 "event_handler_failed",
                 queue=spec.queue_name(),
                 event_type=envelope.type,
-                error=f"{type(exc).__name__}: {exc}",
+                error=type(exc).__name__,
                 redelivered=message.redelivered,
             )
             # 1ª falha → requeue; na redelivery → DLQ (MAX_ATTEMPTS=2)
+            if not message.redelivered:
+                await asyncio.sleep(2)
             await _finish(message, ack=False, requeue=not message.redelivered)
         else:
             await _finish(message, ack=True, requeue=False)
@@ -301,7 +396,7 @@ async def _finish(
         else:
             await message.nack(requeue=requeue)
     except Exception as exc:  # noqa: BLE001 — message já entregue/processada
-        log_event(logger, "event_delivery_finish_failed", error=f"{type(exc).__name__}: {exc}")
+        log_event(logger, "event_delivery_finish_failed", error=type(exc).__name__)
 
 
 async def _publish_async(envelope: EventEnvelope) -> None:
@@ -324,7 +419,7 @@ async def _publish_async(envelope: EventEnvelope) -> None:
             return
         try:
             message = aio_pika.Message(
-                body=envelope.model_dump_json().encode(),
+                body=envelope.model_dump_json(by_alias=True).encode(),
                 delivery_mode=DeliveryMode.PERSISTENT,
                 message_id=envelope.event_id,
             )
@@ -340,9 +435,9 @@ async def _publish_async(envelope: EventEnvelope) -> None:
                 "event_publish_retry",
                 event_type=envelope.type,
                 event_id=envelope.event_id,
-                error=f"{type(exc).__name__}: {exc}",
+                error=type(exc).__name__,
             )
-            _state.connected.clear()  # canal fechado: espere a reconexão
+
     log_event(logger, "event_publish_failed", event_type=envelope.type, event_id=envelope.event_id,
               reason="broker indisponível")
 
@@ -351,3 +446,6 @@ async def _graceful_close() -> None:
     _state.stopping = True
     for task in list(_state.tasks):
         task.cancel()
+    await asyncio.gather(*list(_state.tasks), return_exceptions=True)
+    if _state.connection is not None:
+        await _state.connection.close()

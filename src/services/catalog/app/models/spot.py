@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import enum
 import uuid
+from datetime import datetime
 
 from sqlalchemy import (
     Boolean,
@@ -21,7 +22,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from shared.db import Base
+from services.catalog.app.db import Base
 
 
 class SpotStatus(str, enum.Enum):
@@ -46,6 +47,9 @@ class TouristSpot(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(String(2000), nullable=False)
+    address: Mapped[str | None] = mapped_column(String(500))
+    image_url: Mapped[str | None] = mapped_column(String(2048))
+    duration_minutes: Mapped[int | None] = mapped_column(Integer)
     latitude: Mapped[float] = mapped_column(Numeric(10, 7), nullable=False)
     longitude: Mapped[float] = mapped_column(Numeric(10, 7), nullable=False)
     status: Mapped[SpotStatus] = mapped_column(
@@ -94,6 +98,7 @@ class Event(Base):
     tourist_spot_id: Mapped[str] = mapped_column(String(36), ForeignKey("tourist_spots.id"), index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(String(2000), nullable=False)
-    occurs_at: Mapped[str] = mapped_column(DateTime, nullable=False)
+    occurs_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    ends_at: Mapped[datetime | None] = mapped_column(DateTime)
     ticket_price: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
     spot: Mapped[TouristSpot] = relationship(back_populates="events")

@@ -5,10 +5,6 @@ Apenas conteúdo indexado é recuperado; spots fechados são excluídos/sinaliza
 
 from __future__ import annotations
 
-import os
-
-os.environ.setdefault("JWT_SECRET", "test-secret-32-bytes-for-hs256-00")
-
 from services.chatbot.app.core import retrieval as retrieval_mod  # noqa: E402
 from services.chatbot.app.core.embeddings import _stub_embed  # noqa: E402
 from services.chatbot.app.models.embedding import EmbeddedContent  # noqa: E402

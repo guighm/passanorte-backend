@@ -14,9 +14,10 @@ from shared.notifications_client import dispatch
 logger = logging.getLogger("gamification")
 
 
-def _notify_completion(user_id: str, code: str) -> None:
+def _notify_completion(db: Session, user_id: str, code: str) -> None:
     """Notificação ao turista — fire-and-forget, falha é tolerada (D-05)."""
     dispatch(
+        db=db,
         kind="new_route",
         source_id=code,
         user_ids=[user_id],
@@ -47,7 +48,7 @@ def complete_route(db: Session, *, user_id: str, route_id: str, prize_id: str) -
     db.add(badge)
     db.add(code)
     db.flush()
-    db.commit()
     log_event(logger, "route_completed", user_id=user_id, route_id=route_id)
-    _notify_completion(user_id, code.code)
+    _notify_completion(db, user_id, code.code)
+    db.commit()
     return {"badge_id": badge.id, "code": code.code, "status": code.status.value}

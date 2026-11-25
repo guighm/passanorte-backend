@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from sqlalchemy import DateTime, Index, Numeric, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from shared.db import Base
+from services.gamification.app.db import Base
 
 
 class VisitStatus(str, enum.Enum):

@@ -7,8 +7,9 @@ para `assistant_unavailable` (503) — nunca roteiro inventado (RF38).
 
 from __future__ import annotations
 
-import os
 from abc import ABC, abstractmethod
+
+from shared.settings import Settings, secret
 
 
 class ProviderUnavailable(Exception):
@@ -64,7 +65,7 @@ class GeminiProvider(LLMProvider):
 
         import httpx
 
-        api_key = os.environ.get("LLM_GEMINI_API_KEY", "")
+        api_key = secret("LLM_GEMINI_API_KEY", required=False)
         if not api_key:
             raise ProviderUnavailable("LLM_GEMINI_API_KEY não configurada")
         prompt = (
@@ -96,8 +97,8 @@ class OllamaProvider(LLMProvider):
 
         import httpx
 
-        base_url = os.environ.get("LLM_OLLAMA_URL", "http://localhost:11434")
-        model = os.environ.get("LLM_OLLAMA_MODEL", "llama3.1")
+        base_url = str(Settings.load().llm_ollama_url).rstrip("/")
+        model = Settings.load().llm_ollama_model
         prompt = (
             "Você é o assistente de turismo PassaNorte. Responda em português, "
             "usando SOMENTE os itens do contexto a seguir (nunca invente pontos).\n"
@@ -125,5 +126,5 @@ _PROVIDERS: dict[str, type[LLMProvider]] = {
 
 def get_provider() -> LLMProvider:
     """Provider ativo pela variável LLM_PROVIDER (default `stub`, D-08)."""
-    name = os.environ.get("LLM_PROVIDER", "stub").lower()
-    return _PROVIDERS.get(name, StubProvider)()
+    name = Settings.load().llm_provider
+    return _PROVIDERS[name]()

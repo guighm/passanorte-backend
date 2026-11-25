@@ -1,7 +1,7 @@
 """Modelo EmbeddedContent — índice RAG do chatbot (D-08) — T060.
 
 Produção (PostgreSQL): a coluna `embedding` usa **pgvector** (`vector(384)`),
-habilitada no banco `passanorte_chatbot` via `CREATE EXTENSION vector;`
+habilitada no schema `extensions` do banco `passanorte`
 docker-compose já ativa a extensão. Testes/SQLite: embedding é persistido
 como JSON — a interface na aplicação é sempre `list[float]` (TypeDecorator).
 """
@@ -17,7 +17,7 @@ from sqlalchemy import DateTime, Float, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
 
-from shared.db import Base
+from services.chatbot.app.db import Base
 
 # dimensão do modelo de embeddings (paraphrase-multilingual-MiniLM-L12-v2 = 384)
 EMBEDDING_DIM = 384
@@ -67,6 +67,7 @@ class EmbeddedContent(Base):
     longitude: Mapped[float | None] = mapped_column(Float)
     ticket_price: Mapped[float | None] = mapped_column(Float)
     occurs_at: Mapped[object | None] = mapped_column(DateTime, nullable=True)
+    ends_at: Mapped[object | None] = mapped_column(DateTime, nullable=True)
     schedule_text: Mapped[str | None] = mapped_column(String(500))
     embedding: Mapped[object] = mapped_column(EmbeddingType())
     embedded_at: Mapped[object] = mapped_column(DateTime, default=lambda: datetime.now(UTC))

@@ -7,4 +7,4 @@ from services.gamification.app.models.enrollment import (  # noqa: F401
     RedeemCode,
     RouteEnrollment,
 )
-from services.gamification.app.models.route import Prize, Route, RoutePoint  # noqa: F401
+from services.gamification.app.models.route import Prize  # noqa: F401

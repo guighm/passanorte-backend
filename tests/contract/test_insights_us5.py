@@ -7,14 +7,10 @@ como o barramento AMQP entrega os eventos `visit.validated`/`access.registered`.
 
 from __future__ import annotations
 
-import os
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
-
-os.environ.setdefault("JWT_SECRET", "test-secret-32-bytes-for-hs256-00")
-os.environ.setdefault("PII_ENCRYPTION_KEY", "MgBPF0RbsIxVX4Vi5ZCp0P5ylutyWhnhSeB_9xIrsMY=")
 
 from services.insights.app.core import deps as insights_deps  # noqa: E402
 from services.insights.app.main import create_test_app as insights_factory  # noqa: E402

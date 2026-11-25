@@ -7,12 +7,8 @@ horários; fechados são sinalizados e fora do roteiro; LLM indisponível →
 
 from __future__ import annotations
 
-import os
-
 import pytest
 from fastapi.testclient import TestClient
-
-os.environ.setdefault("JWT_SECRET", "test-secret-32-bytes-for-hs256-00")
 
 from services.chatbot.app.core import deps as chatbot_deps  # noqa: E402
 from services.chatbot.app.core import indexer  # noqa: E402

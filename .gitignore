@@ -23,7 +23,6 @@ htmlcov/
 # Tooling
 .mypy_cache/
 .ruff_cache/
-uv.lock
 
 # Databases / local data
 *.db
@@ -37,8 +36,6 @@ data/
 Thumbs.db
 *.swp
 
-# Spec artifacts
-.specify/
-# Claude Code / specs (local, não versionados)
-.claude/
-specs/
+# Local secret material
+secrets/
+*.private.pem

@@ -1,64 +1,53 @@
-"""Geração de credencial inicial do admin (RF01) — T025.
-
-Uso:
-    uv run python scripts/create_admin.py --email admin@passanorte.com --password '...'
-    uv run python scripts/create_admin.py            # gera senha aleatória e imprime
-    uv run python scripts/create_admin.py --email ... --if-missing  # só cria se o email for novo
-"""
-
+"""Idempotent admin bootstrap. Password from ADMIN_PASSWORD_FILE or hidden prompt."""
 from __future__ import annotations
 
 import argparse
-import secrets
+import getpass
 import sys
 
-sys.path.insert(0, "src")
+from services.auth.app.models.user import User, UserRole
+from shared.db import create_service_engine, make_session_factory
+from shared.security import hash_password
+from shared.settings import ConfigurationError, secret
 
-from services.auth.app.models.user import User, UserRole  # noqa: E402
-from shared.db import create_service_engine, database_url, make_session_factory  # noqa: E402
-from shared.security import hash_password  # noqa: E402
+
+def create_admin(db, email: str, password: str, name: str = "Admin", surname: str = "PassaNorte") -> bool:
+    existing = db.query(User).filter(User.email == email).first()
+    if existing is not None:
+        if existing.role != UserRole.admin or not existing.is_active:
+            raise ConfigurationError("Bootstrap email belongs to a non-admin or inactive account")
+        return False
+    db.add(User(
+        role=UserRole.admin, name=name, surname=surname, email=email,
+        password_hash=hash_password(password), country_of_origin="Brasil",
+    ))
+    db.commit()
+    return True
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Cria a credencial inicial do admin (RF01).")
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--email", required=True)
-    parser.add_argument("--password", help="se omitido, uma senha forte é gerada e impressa")
-    parser.add_argument("--name", default="Admin")
-    parser.add_argument("--surname", default="PassaNorte")
-    parser.add_argument("--if-missing", action="store_true",
-                        help="não falha nem cria nada se o email já existir "
-                             "(usado pelo seed one-shot do compose)")
+    parser.add_argument("--if-missing", action="store_true", help="Compatibility flag; always idempotent")
     args = parser.parse_args()
-
-    password = args.password or (secrets.token_urlsafe(16) + "Aa1!")
-    database_url()  # valida DATABASE_URL cedo
     engine = create_service_engine()
-    factory = make_session_factory(engine)
-    db = factory()
     try:
-        existing = db.query(User).filter(User.email == args.email).first()
-        if existing is not None:
-            if args.if_missing:
-                print(f"admin já existe: {args.email} — nada a fazer.")
-                return 0
-            print(f"erro: email {args.email} já cadastrado.", file=sys.stderr)
-            return 1
-        user = User(
-            role=UserRole.admin,
-            name=args.name,
-            surname=args.surname,
-            email=args.email,
-            password_hash=hash_password(password),
-            country_of_origin="Brasil",
-        )
-        db.add(user)
-        db.commit()
-        print(f"admin criado: {args.email}")
-        if not args.password:
-            print(f"senha gerada: {password}")
+        with make_session_factory(engine)() as db:
+            existing = db.query(User).filter(User.email == args.email).first()
+            password = ""
+            if existing is None:
+                password = secret("ADMIN_PASSWORD", required=False)
+                if not password and sys.stdin.isatty():
+                    password = getpass.getpass("Admin password: ")
+                if not password:
+                    raise ConfigurationError("Supply ADMIN_PASSWORD_FILE or use an interactive terminal")
+            created = create_admin(db, args.email, password)
+            print("Admin created." if created else "Admin already exists; unchanged.")
         return 0
+    except (ConfigurationError, ValueError):
+        print("Admin bootstrap failed: check configuration, password policy and account role.", file=sys.stderr)
+        return 1
     finally:
-        db.close()
         engine.dispose()
 
 

@@ -7,18 +7,15 @@ os efeitos colaterais esperados em cada banco.
 
 from __future__ import annotations
 
-import os
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
-
-os.environ.setdefault("JWT_SECRET", "test-secret-32-bytes-for-hs256-00")
-os.environ.setdefault("PII_ENCRYPTION_KEY", "MgBPF0RbsIxVX4Vi5ZCp0P5ylutyWhnhSeB_9xIrsMY=")
 
 from services.auth.app.core import deps as auth_deps  # noqa: E402
 from services.auth.app.main import create_test_app as auth_factory  # noqa: E402
 from services.catalog.app.core import deps as catalog_deps  # noqa: E402
 from services.catalog.app.main import create_test_app as catalog_factory  # noqa: E402
+from services.catalog.app.models.spot import Category
 from services.validation.app.core.propagator import get_propagator  # noqa: E402
 from shared.security import create_access_token  # noqa: E402
 
@@ -52,8 +49,8 @@ def test_visit_validated_replayed_ingests_fact(events, replay, db_session):
     assert facts[0].user_id == "u1"
 
 
-def test_login_publishes_access_registered(events, replay, db_session):
-    from services.insights.app.models.facts import AccessLog
+def test_tourist_login_is_distinct_from_access(events, replay, db_session):
+    from services.insights.app.models.facts import AccessLog, TouristLogin
 
     app = auth_factory()
     app.dependency_overrides[auth_deps.get_db] = lambda: db_session
@@ -68,22 +65,26 @@ def test_login_publishes_access_registered(events, replay, db_session):
             "password": "s3cr3t!x",
             "phone": "+55 92 99999-0000",
             "country_of_origin": "Brasil",
-            "cpf": "123.456.789-00",
+            "consent_version": "1", "accept_terms": True, "accept_privacy": True,
+            "cpf": "529.982.247-25",
         },
     )
     assert resp.status_code == 201, resp.text
     resp = auth.post("/api/v1/session", json={"email": "ana@example.com", "password": "s3cr3t!x"})
     assert resp.status_code == 200, resp.text
 
-    access_events = [e for e in events if e["type"] == "access.registered"]
+    access_events = [e for e in events if e["type"] == "tourist.login"]
     assert len(access_events) >= 1
     assert access_events[0]["data"]["user_id"]
 
     replay("insights", db_session)
-    assert db_session.query(AccessLog).count() >= 1
+    assert db_session.query(TouristLogin).count() == 1
+    assert db_session.query(AccessLog).count() == 0
 
 
 def test_catalog_spot_publishes_new_spot_and_index_refresh(events, db_session):
+    db_session.add(Category(id="cat-cultura", name="Cultura"))
+    db_session.commit()
     app = catalog_factory()
     app.dependency_overrides[catalog_deps.get_db] = lambda: db_session
     catalog = TestClient(app)
@@ -97,7 +98,7 @@ def test_catalog_spot_publishes_new_spot_and_index_refresh(events, db_session):
             "description": "Teatro histórico",
             "latitude": -3.47,
             "longitude": -60.02,
-            "category_ids": ["cat-cultura"],
+            "address": "Manaus", "category_ids": ["cat-cultura"],
         },
     )
     assert resp.status_code == 201, resp.text

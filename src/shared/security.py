@@ -1,104 +1,148 @@
-"""Segurança compartilhada: JWT, bcrypt e criptografia de PII (D-02, D-03, D-04).
-
-- JWT: par access (15 min) / refresh (7 dias, com jti para revogação),
-  assinatura HS256 com segredo por ambiente (RNF09).
-- Senhas: bcrypt com work factor 12, nunca texto plano (RNF10).
-- PII: AES-256-GCM em nível de aplicação + HMAC determinístico para índices
-  de unicidade sem descriptografar (RNF08, LGPD).
-"""
-
+"""RS256, bcrypt, Fernet (AES-128-CBC + HMAC-SHA256) and independent HMAC."""
 from __future__ import annotations
 
 import datetime as dt
 import hashlib
 import hmac
 import os
-import secrets
+import re
 import uuid
+from pathlib import Path
 
 import bcrypt
 import jwt
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import Fernet, InvalidToken, MultiFernet
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
-JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret-not-for-production-32-bytes-min")
-PII_ENCRYPTION_KEY = os.environ.get("PII_ENCRYPTION_KEY", Fernet.generate_key().decode())
-ACCESS_TOKEN_MINUTES = int(os.environ.get("ACCESS_TOKEN_MINUTES", "15"))
-REFRESH_TOKEN_DAYS = int(os.environ.get("REFRESH_TOKEN_DAYS", "7"))
-JWT_ALGORITHM = "HS256"
-# Issuer dos tokens: usado pelo plugin `jwt` do Kong para casar a credencial do
-# Consumer (kong/kong.yml). Os serviços não verificam `iss` (PyJWT default) —
-# o claim é para a camada de borda.
-JWT_ISSUER = os.environ.get("JWT_ISSUER", "passanorte")
+from shared.settings import ConfigurationError, Settings, secret
+
+ACCESS_TOKEN_MINUTES = 15
+JWT_ISSUER = "passanorte"
+JWT_ALGORITHM = "RS256"
 
 
-# --- Sessão (JWT) -----------------------------------------------------------
+def verification_keys() -> dict[str, bytes]:
+    directory = os.environ.get("JWT_PUBLIC_KEYS_DIR", "")
+    if not directory:
+        raise ConfigurationError("Missing JWT_PUBLIC_KEYS_DIR")
+    keys = {}
+    try:
+        for path in Path(directory).glob("*.pem"):
+            if not re.fullmatch(r"[A-Za-z0-9_-]+", path.stem):
+                raise ValueError
+            pem = path.read_bytes()
+            key = serialization.load_pem_public_key(pem)
+            if not isinstance(key, rsa.RSAPublicKey) or key.key_size < 2048:
+                raise ValueError
+            keys[path.stem] = pem
+        if not keys:
+            raise ValueError
+    except (OSError, ValueError):
+        raise ConfigurationError("Invalid RSA public key directory (minimum 2048 bits)") from None
+    return keys
+
+
+def signing_key() -> tuple[str, bytes]:
+    kid = os.environ.get("JWT_ACTIVE_KID", "")
+    pem = secret("JWT_PRIVATE_KEY").encode()
+    try:
+        key = serialization.load_pem_private_key(pem, password=None)
+        public = verification_keys().get(kid)
+        if not isinstance(key, rsa.RSAPrivateKey) or key.key_size < 2048 or public is None:
+            raise ValueError
+        if key.public_key().public_bytes(
+            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+        ) != public:
+            raise ValueError
+    except (ValueError, TypeError):
+        raise ConfigurationError("JWT_PRIVATE_KEY must match JWT_ACTIVE_KID public key") from None
+    return kid, pem
+
+
+def _create(user_id: str, role: str, token_type: str) -> tuple[str, int]:
+    settings = Settings.load()
+    seconds = settings.access_token_minutes * 60 if token_type == "access" else settings.refresh_token_days * 86400
+    now = dt.datetime.now(dt.UTC)
+    kid, key = signing_key()
+    claims = {
+        "sub": user_id, "role": role, "type": token_type,
+        "iss": settings.jwt_issuer, "aud": settings.jwt_audience,
+        "iat": now, "exp": now + dt.timedelta(seconds=seconds), "jti": uuid.uuid4().hex,
+    }
+    return jwt.encode(claims, key, algorithm=JWT_ALGORITHM, headers={"kid": kid}), seconds
+
 
 def create_access_token(user_id: str, role: str) -> tuple[str, int]:
-    """Gera o access token; retorna (token, expira_em_segundos)."""
-    now = dt.datetime.now(dt.UTC)
-    expires_in = ACCESS_TOKEN_MINUTES * 60
-    claims = {
-        "sub": user_id,
-        "role": role,
-        "type": "access",
-        "iss": JWT_ISSUER,
-        "iat": now,
-        "exp": now + dt.timedelta(seconds=expires_in),
-        "jti": uuid.uuid4().hex,
-    }
-    return jwt.encode(claims, JWT_SECRET, algorithm=JWT_ALGORITHM), expires_in
+    return _create(user_id, role, "access")
 
 
 def create_refresh_token(user_id: str, role: str) -> str:
-    now = dt.datetime.now(dt.UTC)
-    claims = {
-        "sub": user_id,
-        "role": role,
-        "type": "refresh",
-        "iss": JWT_ISSUER,
-        "iat": now,
-        "exp": now + dt.timedelta(days=REFRESH_TOKEN_DAYS),
-        "jti": secrets.token_urlsafe(16),
-    }
-    return jwt.encode(claims, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    return _create(user_id, role, "refresh")[0]
 
 
 def decode_token(token: str, expected_type: str = "access") -> dict:
-    """Decodifica e valida o token; lança jwt.PyJWTError em falha."""
-    claims = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-    if claims.get("type") != expected_type:
-        raise jwt.InvalidTokenError(f"Esperado token do tipo {expected_type}")
+    header = jwt.get_unverified_header(token)
+    kid = header.get("kid")
+    key = verification_keys().get(kid) if isinstance(kid, str) else None
+    if header.get("alg") != JWT_ALGORITHM or key is None:
+        raise jwt.InvalidTokenError("Unknown signing key or algorithm")
+    settings = Settings.load()
+    claims = jwt.decode(
+        token, key, algorithms=[JWT_ALGORITHM], issuer=settings.jwt_issuer, audience=settings.jwt_audience,
+        options={"require": ["exp", "iat", "sub", "iss", "aud", "type", "role", "jti"], "strict_aud": True},
+    )
+    if claims["type"] != expected_type or claims["role"] not in ("admin", "supplier", "tourist") or any(
+        not isinstance(claims[name], str) or not claims[name] for name in ("sub", "role", "jti")
+    ):
+        raise jwt.InvalidTokenError("Invalid token claims")
+    if any(type(claims[name]) is not int for name in ("exp", "iat")):
+        raise jwt.InvalidTokenError("Numeric dates required")
+    if claims["exp"] <= claims["iat"]:
+        raise jwt.InvalidTokenError("Invalid token lifetime")
     return claims
 
 
-# --- Senhas (bcrypt) --------------------------------------------------------
+def validate_password(password: str) -> str:
+    if not 8 <= len(password.encode("utf-8")) <= 72:
+        raise ValueError("Password must contain 8 to 72 UTF-8 bytes")
+    return password
+
 
 def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12)).decode()
+    return bcrypt.hashpw(validate_password(password).encode(), bcrypt.gensalt(rounds=12)).decode()
 
 
 def verify_password(password: str, password_hash: str) -> bool:
-    return bcrypt.checkpw(password.encode(), password_hash.encode())
+    if len(password.encode()) > 72:
+        return False
+    try:
+        return bcrypt.checkpw(password.encode(), password_hash.encode())
+    except ValueError:
+        return False
 
 
-# --- PII (AES-256-GCM via Fernet + HMAC de unicidade) -----------------------
-
-_fernet = Fernet(PII_ENCRYPTION_KEY.encode())
+def encryption() -> MultiFernet:
+    try:
+        keys = secret("PII_ENCRYPTION_KEY").split(",")
+        return MultiFernet([Fernet(key.strip().encode()) for key in keys])
+    except (ValueError, TypeError):
+        raise ConfigurationError("PII_ENCRYPTION_KEY must contain valid Fernet keys") from None
 
 
 def encrypt_pii(value: str) -> str:
-    return _fernet.encrypt(value.encode()).decode()
+    return encryption().encrypt(value.encode()).decode()
 
 
 def decrypt_pii(value: str) -> str:
     try:
-        return _fernet.decrypt(value.encode()).decode()
-    except InvalidToken as exc:
-        raise ValueError("Falha ao descriptografar dado sensível") from exc
+        return encryption().decrypt(value.encode()).decode()
+    except InvalidToken:
+        raise ValueError("Cannot decrypt sensitive data") from None
 
 
 def pii_uniqueness_hash(value: str) -> str:
-    """HMAC determinístico para índice de unicidade sem armazenar o valor."""
-    return hmac.new(
-        PII_ENCRYPTION_KEY.encode(), value.encode().lower(), hashlib.sha256
-    ).hexdigest()
+    key = secret("PII_HMAC_KEY").encode()
+    if len(key) < 32:
+        raise ConfigurationError("PII_HMAC_KEY must have at least 32 bytes")
+    return hmac.new(key, value.encode().lower(), hashlib.sha256).hexdigest()

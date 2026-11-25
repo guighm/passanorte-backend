@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from sqlalchemy import DateTime, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from shared.db import Base
+from services.insights.app.db import Base
 
 
 class AccessLog(Base):
@@ -42,3 +42,11 @@ class VisitFact(Base):
     country_of_origin: Mapped[str | None] = mapped_column(String(64))
     interests: Mapped[str | None] = mapped_column(String(500))  # snapshot agregado (JSON/csv)
     occurred_at: Mapped[object] = mapped_column(DateTime, index=True)
+
+
+class TouristLogin(Base):
+    __tablename__ = "tourist_logins"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), index=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

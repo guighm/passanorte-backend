@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import logging
 
+from sqlalchemy.orm import Session
+
 from shared import messaging
 
 logger = logging.getLogger("insights_client")
 
 
-def notify_access(user_id: str, client: str | None = None) -> None:
-    messaging.publish("access.registered", {"user_id": user_id, "client": client})
+def notify_access(user_id: str, client: str | None = None, *, db: Session | None = None) -> None:
+    messaging.enqueue(db, "access.registered", {"user_id": user_id, "client": client})

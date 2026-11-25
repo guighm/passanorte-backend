@@ -3,9 +3,11 @@ name = "passanorte-backend"
 version = "0.1.0"
 description = "Backend do SPD-PassaNorte: sistema distribuído de gamificação do turismo de Manaus"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.12"
 dependencies = [
-    "fastapi[standard]>=0.141.1",
+    "fastapi>=0.141.1",
+    "uvicorn[standard]>=0.30",
+    "email-validator>=2.0",
     "pydantic>=2.0",
     "sqlalchemy>=2.0",
     "alembic>=1.13",
@@ -24,13 +26,14 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.6",
     "mypy>=1.10",
-    "types-pyjwt",
+    "pyyaml>=6.0",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.ruff]
 line-length = 120

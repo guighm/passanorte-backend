@@ -8,7 +8,7 @@ from shared.app import create_app
 
 def create_test_app() -> FastAPI:
     """App completo para testes de contrato (dependências sobrescritáveis)."""
-    return create_app("validation", routers=[visits.router, internal.router])
+    return create_app("gamification", routers=[visits.router], development_routers=[internal.router])
 
 
 app = create_test_app()

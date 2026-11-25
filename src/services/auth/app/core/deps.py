@@ -15,10 +15,9 @@ from shared.security import decode_token
 
 def get_db() -> Generator[Session, None, None]:
     """Sessão do banco do serviço (sobrescrita pelos testes via dependency_overrides)."""
-    from shared.db import create_service_engine, make_session_factory
+    from shared.db import service_session_factory
 
-    engine = create_service_engine()
-    factory = make_session_factory(engine)
+    factory = service_session_factory()
     session = factory()
     try:
         yield session

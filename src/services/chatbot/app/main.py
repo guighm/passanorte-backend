@@ -14,7 +14,10 @@ def create_test_app() -> FastAPI:
         "chatbot",
         routers=[conversations.router],
         consumers=[
-            ConsumerSpec(service="chatbot", routing_key="catalog.index.refresh", handler=indexer.handle_refresh),
+            ConsumerSpec(
+                service="chatbot", routing_key="catalog.index.refresh",
+                handler=indexer.refresh_from_payload, transactional=True,
+            ),
         ],
     )
 

@@ -9,15 +9,21 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from services.gamification.app.core.completion import complete_route
-from services.gamification.app.core.deps import get_auth_header, get_db, get_validated_visits, require_role
+from services.gamification.app.core.deps import (
+    get_auth_header,
+    get_db,
+    get_route_lookup,
+    get_validated_visits,
+    require_role,
+)
 from services.gamification.app.models.enrollment import (
     Badge,
     EnrollmentStatus,
     RedeemCode,
     RouteEnrollment,
 )
-from services.gamification.app.models.route import Route
 from shared.errors import ApiError
+from shared.internal_client import RouteSnapshot
 from shared.logging import log_event
 
 router = APIRouter(tags=["enrollments"])
@@ -25,8 +31,8 @@ router = APIRouter(tags=["enrollments"])
 logger = logging.getLogger("gamification")
 
 
-def _derive_progress(route: Route, visited: set[str]) -> dict:
-    active_points = [p.tourist_spot_id for p in route.points if p.is_active]
+def _derive_progress(route: RouteSnapshot, visited: set[str]) -> dict:
+    active_points = route.points
     visited_points = [spot for spot in active_points if spot in visited]
     pending = [spot for spot in active_points if spot not in visited]
     percent = round(100.0 * len(visited_points) / len(active_points), 2) if active_points else 0.0
@@ -34,7 +40,7 @@ def _derive_progress(route: Route, visited: set[str]) -> dict:
 
 
 
-def _check_completion(db: Session, enrollment: RouteEnrollment, route: Route, body: dict) -> dict:
+def _check_completion(db: Session, enrollment: RouteEnrollment, route: RouteSnapshot, body: dict) -> dict:
     """Conclusão derivada: percent 100% emite insígnia + código idempotentes (RF35/RF36)."""
     if body["percent"] == 100.0 and enrollment.status == EnrollmentStatus.in_progress:
         result = complete_route(db, user_id=enrollment.user_id, route_id=route.id, prize_id=route.prize_id)
@@ -46,8 +52,7 @@ def _check_completion(db: Session, enrollment: RouteEnrollment, route: Route, bo
         body["badge_awarded"] = True
     return body
 
-def _enrollment_body(db: Session, enrollment: RouteEnrollment, validated: set[str]) -> dict:
-    route = enrollment.route
+def _enrollment_body(db: Session, enrollment: RouteEnrollment, validated: set[str], route: RouteSnapshot) -> dict:
     progress = _derive_progress(route, validated)
     badge = db.query(Badge).filter(Badge.user_id == enrollment.user_id, Badge.route_id == route.id).first()
     code = (
@@ -74,10 +79,11 @@ def enroll(
     claims: dict = Depends(require_role("tourist")),
     auth_header: str = Depends(get_auth_header),
     validated_for: Callable = Depends(get_validated_visits),
+    lookup: Callable = Depends(get_route_lookup),
     db: Session = Depends(get_db),
 ) -> dict:
-    route = db.query(Route).filter(Route.id == route_id, Route.is_active.is_(True)).first()
-    if route is None:
+    route = lookup(route_id)
+    if route is None or not route.is_active:
         raise ApiError(code="not_found", message="Rota não encontrada.", status_code=404)
     existing = (
         db.query(RouteEnrollment).filter(RouteEnrollment.user_id == claims["sub"], RouteEnrollment.route_id == route_id)
@@ -94,7 +100,7 @@ def enroll(
 
     # progresso é DERIVADO (D-13): visitas anteriores à inscrição contam
     validated = set(validated_for(auth_header))
-    body = _enrollment_body(db, enrollment, validated)
+    body = _enrollment_body(db, enrollment, validated, route)
 
     # conclusão imediata (retroativa, D-13)
     return _check_completion(db, enrollment, route, body)
@@ -105,11 +111,15 @@ def list_enrollments(
     claims: dict = Depends(require_role("tourist")),
     auth_header: str = Depends(get_auth_header),
     validated_for: Callable = Depends(get_validated_visits),
+    lookup: Callable = Depends(get_route_lookup),
     db: Session = Depends(get_db),
 ) -> dict:
     enrollments = db.query(RouteEnrollment).filter(RouteEnrollment.user_id == claims["sub"]).all()
     validated = set(validated_for(auth_header))
-    items = [_check_completion(db, e, e.route, _enrollment_body(db, e, validated)) for e in enrollments]
+    items = []
+    for enrollment in enrollments:
+        route = require_enrolled_route(lookup, enrollment.route_id)
+        items.append(_check_completion(db, enrollment, route, _enrollment_body(db, enrollment, validated, route)))
     return {"items": items, "total": len(items)}
 
 
@@ -119,6 +129,7 @@ def get_enrollment(
     claims: dict = Depends(require_role("tourist")),
     auth_header: str = Depends(get_auth_header),
     validated_for: Callable = Depends(get_validated_visits),
+    lookup: Callable = Depends(get_route_lookup),
     db: Session = Depends(get_db),
 ) -> dict:
     enrollment = (
@@ -128,4 +139,12 @@ def get_enrollment(
     if enrollment is None:
         raise ApiError(code="not_found", message="Inscrição não encontrada.", status_code=404)
     validated = set(validated_for(auth_header))
-    return _check_completion(db, enrollment, enrollment.route, _enrollment_body(db, enrollment, validated))
+    route = require_enrolled_route(lookup, route_id)
+    return _check_completion(db, enrollment, route, _enrollment_body(db, enrollment, validated, route))
+
+
+def require_enrolled_route(lookup: Callable, route_id: str) -> RouteSnapshot:
+    route: RouteSnapshot | None = lookup(route_id)
+    if route is None:
+        raise ApiError(code="route_unavailable", message="Definição de rota indisponível.", status_code=503)
+    return route

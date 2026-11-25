@@ -2,23 +2,22 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable, Generator
+from urllib.parse import quote
 
-import httpx
 import jwt
 from fastapi import Depends, Request
 from sqlalchemy.orm import Session
 
 from shared.errors import ApiError
+from shared.internal_client import RouteSnapshot
 from shared.security import decode_token
 
 
 def get_db() -> Generator[Session, None, None]:
-    from shared.db import create_service_engine, make_session_factory
+    from shared.db import service_session_factory
 
-    engine = create_service_engine()
-    factory = make_session_factory(engine)
+    factory = service_session_factory()
     session = factory()
     try:
         yield session
@@ -36,9 +35,9 @@ def get_current_user(request: Request) -> dict:
         raise ApiError(code="unauthorized", message="Autenticação necessária.", status_code=401) from None
 
 
-def require_role(role: str) -> Callable:
+def require_role(*roles: str) -> Callable:
     def dependency(claims: dict = Depends(get_current_user)) -> dict:
-        if claims.get("role") != role:
+        if claims.get("role") not in roles:
             raise ApiError(code="forbidden", message="Acesso negado para o seu perfil.", status_code=403)
         return claims
 
@@ -51,24 +50,29 @@ def get_auth_header(request: Request) -> str:
 
 
 def get_validated_visits() -> Callable[[str], list[str]]:
-    """Fetcher das visitas validadas do usuário no validation (D-13).
-
-    Recebe o cabeçalho Authorization do turista (mesmo usuário; o serviço
-    validation confia no JWT, D-02) e devolve os tourist_spot_id validados.
-    Em indisponibilidade o progresso deriva vazio (não trava).
-    """
-    base_url = os.environ.get("VALIDATION_SERVICE_URL", "http://localhost:8003")
+    """Read visits locally now that both routers share the Gamification process."""
+    from services.validation.app.models.visit import Visit, VisitStatus
+    from shared.db import service_session_factory
 
     def fetch(auth_header: str) -> list[str]:
-        try:
-            resp = httpx.get(
-                f"{base_url}/api/v1/visits",
-                headers={"Authorization": auth_header},
-                timeout=5.0,
+        claims = decode_token(auth_header.removeprefix("Bearer ").strip(), expected_type="access")
+        with service_session_factory()() as db:
+            rows = db.query(Visit.tourist_spot_id).filter(
+                Visit.user_id == claims["sub"], Visit.status == VisitStatus.validated
             )
-            resp.raise_for_status()
-            return [item["tourist_spot_id"] for item in resp.json().get("items", [])]
-        except (httpx.HTTPError, ValueError, KeyError):
-            return []
+            return [row[0] for row in rows]
+
+    return fetch
+
+
+def get_route_lookup() -> Callable[[str], RouteSnapshot | None]:
+    from shared.internal_client import call_internal
+    from shared.settings import Settings
+
+    url = str(Settings.load().catalog_service_url)
+
+    def fetch(route_id: str) -> RouteSnapshot | None:
+        data = call_internal(url, "GET", f"/internal/routes/{quote(route_id, safe='')}", missing_ok=True)
+        return RouteSnapshot.model_validate(data) if data is not None else None
 
     return fetch

@@ -7,7 +7,8 @@ delete-then-insert por (source_type, source_id) — idempotente.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 from sqlalchemy import delete
@@ -31,7 +32,9 @@ class IndexItem(BaseModel):
     longitude: float | None = None
     ticket_price: float | None = Field(default=None, ge=0)
     occurs_at: str | None = None
+    ends_at: str | None = None
     schedule_text: str | None = None
+    operation: Literal["upsert", "delete"] = "upsert"
 
 
 def refresh_index_items(db: Session, embedder, items: list[IndexItem]) -> dict:
@@ -47,6 +50,9 @@ def refresh_index_items(db: Session, embedder, items: list[IndexItem]) -> dict:
             )
         )
     db.flush()
+    items = [item for item in items if item.operation == "upsert"]
+    if not items:
+        return {"indexed": 0}
     texts = []
     for item in items:
         chunk = f"{item.title}. {item.description}"
@@ -59,9 +65,6 @@ def refresh_index_items(db: Session, embedder, items: list[IndexItem]) -> dict:
         texts.append(chunk)
     vectors = embedder(texts)
     for item, chunk, vector in zip(items, texts, vectors, strict=True):
-        occurs = None
-        if item.occurs_at:
-            occurs = datetime.fromisoformat(item.occurs_at.replace("Z", "+00:00")).replace(tzinfo=None)
         db.add(
             EmbeddedContent(
                 source_type=item.source_type,
@@ -73,14 +76,22 @@ def refresh_index_items(db: Session, embedder, items: list[IndexItem]) -> dict:
                 latitude=item.latitude,
                 longitude=item.longitude,
                 ticket_price=item.ticket_price,
-                occurs_at=occurs,
+                occurs_at=_index_time(item.occurs_at),
+                ends_at=_index_time(item.ends_at),
                 schedule_text=item.schedule_text,
                 embedding=list(vector),
             )
         )
-    db.commit()
+    db.flush()
     log_event(logger, "index_refreshed", count=len(items))
     return {"indexed": len(items)}
+
+
+def _index_time(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    time = datetime.fromisoformat(value)
+    return time.astimezone(UTC).replace(tzinfo=None) if time.tzinfo else time
 
 
 def refresh_from_payload(db: Session, payload_data: dict) -> dict:
@@ -95,5 +106,6 @@ def handle_refresh(data: dict) -> None:
     db = service_session_factory()()
     try:
         refresh_from_payload(db, data)
+        db.commit()
     finally:
         db.close()

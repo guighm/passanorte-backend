@@ -6,13 +6,8 @@ conclusão com insígnia + código → resgate transacional pelo funcionário.
 
 from __future__ import annotations
 
-import os
-
 import pytest
 from fastapi.testclient import TestClient
-
-os.environ.setdefault("JWT_SECRET", "test-secret-32-bytes-for-hs256-00")
-os.environ.setdefault("PII_ENCRYPTION_KEY", "MgBPF0RbsIxVX4Vi5ZCp0P5ylutyWhnhSeB_9xIrsMY=")
 
 from services.gamification.app.core import deps as gam_deps  # noqa: E402
 from services.gamification.app.main import create_test_app as gam_factory  # noqa: E402
@@ -24,7 +19,7 @@ SPOTS = ["spot-1", "spot-2"]
 
 
 @pytest.fixture
-def services(db_session):
+def services(db_session, connect_route_services):
     """validation e gamification compartilham o mesmo banco em memória."""
     val_app = val_factory()
     val_app.dependency_overrides[val_deps.get_db] = lambda: db_session
@@ -44,7 +39,8 @@ def services(db_session):
         return [row.tourist_spot_id for row in rows]
 
     gam_app.dependency_overrides[gam_deps.get_validated_visits] = lambda: fetch_validated
-    return TestClient(val_app), TestClient(gam_app)
+    catalog, gamification = connect_route_services(gam_app)
+    return catalog, TestClient(val_app), gamification
 
 
 def _headers(role: str, user_id: str) -> dict:
@@ -53,13 +49,13 @@ def _headers(role: str, user_id: str) -> dict:
 
 
 def test_us4_full_gamification_cycle(services):
-    validation, gamification = services
+    catalog, validation, gamification = services
     admin = _headers("admin", "admin-1")
     tourist = _headers("tourist", "user-7")
-    employee = _headers("employee", "emp-2")
+    supplier = _headers("supplier", "emp-2")
 
     # 1. admin cadastra rota com brinde e estoque (RF18)
-    resp = gamification.post(
+    resp = catalog.post(
         "/api/v1/routes",
         headers=admin,
         json={"name": "Rota Histórica", "description": "d", "points": SPOTS,
@@ -105,10 +101,10 @@ def test_us4_full_gamification_cycle(services):
     assert len(gamification.get("/api/v1/redeem-codes", headers=tourist).json()["items"]) == 1
 
     # 5. funcionário resgata o código → estoque baixa para 0 (RF21)
-    resp = gamification.post("/api/v1/redemptions", headers=employee, json={"code": redeem_code})
+    resp = gamification.post("/api/v1/redemptions", headers=supplier, json={"code": redeem_code})
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "redeemed"
 
     # reuso do mesmo código → 409 (FR-027)
-    resp = gamification.post("/api/v1/redemptions", headers=employee, json={"code": redeem_code})
+    resp = gamification.post("/api/v1/redemptions", headers=supplier, json={"code": redeem_code})
     assert resp.status_code == 409

@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from sqlalchemy import DateTime, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from shared.db import Base
+from services.notifications.app.db import Base
 
 
 class NotificationSubscription(Base):

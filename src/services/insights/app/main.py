@@ -14,8 +14,18 @@ def create_test_app() -> FastAPI:
         "insights",
         routers=[dashboard.router],
         consumers=[
-            ConsumerSpec(service="insights", routing_key="visit.validated", handler=handlers.handle_visit_fact),
-            ConsumerSpec(service="insights", routing_key="access.registered", handler=handlers.handle_access),
+            ConsumerSpec(
+                service="insights", routing_key="visit.validated",
+                handler=handlers.ingest_visit_fact, transactional=True,
+            ),
+            ConsumerSpec(
+                service="insights", routing_key="access.registered",
+                handler=handlers.ingest_access, transactional=True,
+            ),
+            ConsumerSpec(
+                service="insights", routing_key="tourist.login",
+                handler=handlers.ingest_tourist_login, transactional=True,
+            ),
         ],
     )
 

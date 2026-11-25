@@ -10,18 +10,21 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
+from sqlalchemy.orm import Session
+
 from shared import messaging
 from shared.logging import log_event
 
 logger = logging.getLogger("validation")
 
 
-def get_propagator() -> Callable[[dict], dict]:
+def get_propagator() -> Callable[..., dict]:
     """Propagador substituível em testes (fire-and-forget via broker, D-05)."""
 
-    def propagate(fact: dict) -> dict:
-        messaging.publish("visit.validated", fact)
-        log_event(logger, "visit_propagated", user_id=fact.get("user_id"))
-        return {"published": True}
-
     return propagate
+
+
+def propagate(fact: dict, *, db: Session | None = None) -> dict:
+    messaging.enqueue(db, "visit.validated", fact)
+    log_event(logger, "visit_propagated", user_id=fact.get("user_id"))
+    return {"published": True}

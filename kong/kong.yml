@@ -1,20 +1,3 @@
-# Kong Gateway — config declarativa DB-less: borda única em :8000 (D-02, Princípio V).
-# Os marcadores __JWT_SECRET__ e __JWT_ISSUER__ são substituídos no boot por
-# kong/entrypoint-render.sh a partir das envs JWT_SECRET / JWT_ISSUER do .env.
-#
-# Sintaxe de rotas Kong 3.x: caminhos regex com prefixo ~/, PCRE. O router do
-# Kong casa a regex contra o path COMPLETO (incluindo a barra inicial) e o
-# match é ancorado no início pela própria engine — a barra da regex se alinha
-# com a barra do path; um `^` após `/` viraria literal. âncoras finais ($) e
-# grupos (/.*)? funcionam normalmente. strip_path: false (os serviços esperam
-# o path completo /api/v1/...).
-#
-# Estratégia: uma rota catch-all autenticada por serviço (todos os métodos e
-# prefixos do serviço, plugin jwt) + rotas públicas com methods + regex ancorado
-# e regex_priority 100 (vencem a rota autenticada, prioridade default 0, apenas
-# onde método e path casam). A tabela completa de permissões coarse-grained do
-# antigo gateway Python vivia em src/services/gateway/app/core/routing.py; aqui
-# a borda aplica JWT e rate limit, e cada serviço repete RBAC via require_role.
 _format_version: "3.0"
 
 # ---------------------------------------------------------------------------
@@ -30,6 +13,9 @@ services:
     write_timeout: 30000
     retries: 0
     routes:
+      - name: auth-docs
+        strip_path: false
+        paths: ["~/docs/auth/?$", '~/openapi/auth\.json$']
       # público: POST /tourists, POST /session, POST /session/refresh
       - name: auth-public
         methods: [POST]
@@ -39,16 +25,25 @@ services:
           - "~/api/v1/tourists/?$"
           - "~/api/v1/session/refresh/?$"
           - "~/api/v1/session/?$"
+      # O corpo do logout autentica com refresh token; n?o requer access ainda v?lido.
+      - name: auth-logout
+        methods: [DELETE]
+        regex_priority: 100
+        strip_path: false
+        paths: ["~/api/v1/session/?$"]
       # autenticado: todo o resto de /tourists /session /me /employees
       - name: auth-api
         strip_path: false
         paths:
-          - "~/api/v1/(tourists|session|me|employees)(/.*)?$"
+          - "~/api/v1/(tourists|session|panel/users)(/.*)?$"
+          - "~/api/v1/me(/interests)?/?$"
         plugins:
           - name: jwt
             config:
-              key_claim_name: iss
+              key_claim_name: kid
               claims_to_verify: [exp]
+              uri_param_names: []
+              cookie_names: []
               run_on_preflight: false
 
   - name: catalog
@@ -58,6 +53,9 @@ services:
     write_timeout: 30000
     retries: 0
     routes:
+      - name: catalog-docs
+        strip_path: false
+        paths: ["~/docs/catalog/?$", '~/openapi/catalog\.json$']
       # público: leitura do catálogo (lista, por id, deep links, categorias, eventos).
       # Nenhum prefixo público enraizado em /admin — GET /admin/tourist-spots/{id}
       # cai sempre na rota autenticada.
@@ -70,34 +68,44 @@ services:
           - "~/api/v1/tourist-spots/[^/]+/?$"
           - "~/api/v1/tourist-spots/[^/]+/external-links/?$"
           - "~/api/v1/categories/?$"
+          - "~/api/v1/routes/?$"
           - "~/api/v1/events/?$"
       # autenticado: escrita de todos os prefixos + GET /admin/tourist-spots/*
       - name: catalog-api
         strip_path: false
         paths:
-          - "~/api/v1/(tourist-spots|admin/tourist-spots|categories|events)(/.*)?$"
+          - "~/api/v1/(tourist-spots|admin/tourist-spots|admin/events|categories|events)(/.*)?$"
+          - "~/api/v1/routes(?:/[^/]+)?/?$"
         plugins:
           - name: jwt
             config:
-              key_claim_name: iss
+              key_claim_name: kid
               claims_to_verify: [exp]
+              uri_param_names: []
+              cookie_names: []
               run_on_preflight: false
 
-  - name: validation
-    url: http://validation:8003
+  - name: benefits
+    url: http://benefits:8008
     connect_timeout: 5000
     read_timeout: 30000
     write_timeout: 30000
     retries: 0
     routes:
-      - name: validation-api
+      - name: benefits-docs
         strip_path: false
-        paths: ["~/api/v1/visits(/.*)?$"]
+        paths: ["~/docs/benefits/?$", '~/openapi/benefits\.json$']
+      - name: benefits-api
+        regex_priority: 110
+        strip_path: false
+        paths: ["~/api/v1/me/(balance|coupons)(/.*)?$", "~/api/v1/partners(/.*)?$"]
         plugins:
           - name: jwt
             config:
-              key_claim_name: iss
+              key_claim_name: kid
               claims_to_verify: [exp]
+              uri_param_names: []
+              cookie_names: []
               run_on_preflight: false
 
   - name: gamification
@@ -107,22 +115,21 @@ services:
     write_timeout: 30000
     retries: 0
     routes:
-      # público: apenas GET /routes exato — /routes/{id} e subpaths são autenticados
-      - name: gamification-public-read
-        methods: [GET]
-        regex_priority: 100
+      - name: gamification-docs
         strip_path: false
-        paths: ["~/api/v1/routes/?$"]
-      # autenticado: todo o resto dos prefixos do serviço
+        paths: ["~/docs/gamification/?$", '~/openapi/gamification\.json$']
       - name: gamification-api
         strip_path: false
         paths:
-          - "~/api/v1/(routes|enrollments|redemptions|prizes|badges|redeem-codes)(/.*)?$"
+          - "~/api/v1/(visits|enrollments|redemptions|prizes|badges|redeem-codes)(/.*)?$"
+          - "~/api/v1/routes/[^/]+/enrollments/?$"
         plugins:
           - name: jwt
             config:
-              key_claim_name: iss
+              key_claim_name: kid
               claims_to_verify: [exp]
+              uri_param_names: []
+              cookie_names: []
               run_on_preflight: false
 
   - name: insights
@@ -132,14 +139,19 @@ services:
     write_timeout: 30000
     retries: 0
     routes:
+      - name: insights-docs
+        strip_path: false
+        paths: ["~/docs/insights/?$", '~/openapi/insights\.json$']
       - name: insights-api
         strip_path: false
         paths: ["~/api/v1/(heatmap|accesses|rankings|distributions)(/.*)?$"]
         plugins:
           - name: jwt
             config:
-              key_claim_name: iss
+              key_claim_name: kid
               claims_to_verify: [exp]
+              uri_param_names: []
+              cookie_names: []
               run_on_preflight: false
 
   - name: notifications
@@ -149,14 +161,19 @@ services:
     write_timeout: 30000
     retries: 0
     routes:
+      - name: notifications-docs
+        strip_path: false
+        paths: ["~/docs/notifications/?$", '~/openapi/notifications\.json$']
       - name: notifications-api
         strip_path: false
         paths: ["~/api/v1/(subscriptions|notifications)(/.*)?$"]
         plugins:
           - name: jwt
             config:
-              key_claim_name: iss
+              key_claim_name: kid
               claims_to_verify: [exp]
+              uri_param_names: []
+              cookie_names: []
               run_on_preflight: false
 
   - name: chatbot
@@ -166,28 +183,23 @@ services:
     write_timeout: 30000
     retries: 0
     routes:
+      - name: chatbot-docs
+        strip_path: false
+        paths: ["~/docs/chatbot/?$", '~/openapi/chatbot\.json$']
       - name: chatbot-api
         strip_path: false
         paths: ["~/api/v1/conversations(/.*)?$"]
         plugins:
           - name: jwt
             config:
-              key_claim_name: iss
+              key_claim_name: kid
               claims_to_verify: [exp]
+              uri_param_names: []
+              cookie_names: []
               run_on_preflight: false
 
 # ---------------------------------------------------------------------------
-# Consumer + credencial JWT: o plugin jwt procura a credencial cuja `key`
-# aparece no claim `iss` do token (key_claim_name: iss) e valida a assinatura
-# HS256 com `secret`. key deve == JWT_ISSUER; secret deve == JWT_SECRET.
-# ---------------------------------------------------------------------------
-consumers:
-  - username: passanorte-edge
-    jwt_secrets:
-      - algorithm: HS256
-        key: __JWT_ISSUER__
-        secret: __JWT_SECRET__
-
+# RS256 credentials are appended from public key files by entrypoint-render.sh.
 # ---------------------------------------------------------------------------
 # Plugins globais.
 # ---------------------------------------------------------------------------
@@ -201,13 +213,11 @@ plugins:
       generator: uuid
       echo_downstream: true
 
-  # CORS central — paridade com ALLOWED_ORIGINS="*" do antigo gateway
-  # (allow_credentials=false quando "*"; expõe X-Request-Id ao browser).
   - name: cors
     config:
-      origins: ["*"]
+      origins: ["__EDGE_CORS_ORIGIN__"]
       methods: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS]
-      headers: ["*"]
+      headers: [Authorization, Content-Type, X-Request-Id, Idempotency-Key]
       exposed_headers: [X-Request-Id]
       credentials: false
       max_age: 3600

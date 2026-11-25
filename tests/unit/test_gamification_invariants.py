@@ -7,27 +7,23 @@ Deve falhar antes de T045/T046.
 
 from __future__ import annotations
 
-import os
-
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
-
-os.environ.setdefault("JWT_SECRET", "test-secret-32-bytes-for-hs256-00")
-os.environ.setdefault("PII_ENCRYPTION_KEY", "MgBPF0RbsIxVX4Vi5ZCp0P5ylutyWhnhSeB_9xIrsMY=")
 
 from services.gamification.app.core import completion as completion_mod  # noqa: E402
 from services.gamification.app.core import redemptions as redemptions_mod  # noqa: E402
 from services.gamification.app.models.enrollment import Badge, RedeemCode  # noqa: E402
 from services.gamification.app.models.route import Prize  # noqa: E402
-from shared.db import Base, make_session_factory  # noqa: E402
+from shared.db import make_session_factory  # noqa: E402
 from shared.errors import ApiError  # noqa: E402
+from tests.conftest import create_test_tables
 
 
 @pytest.fixture
 def session_factory():
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-    Base.metadata.create_all(engine)
+    engine = create_test_tables(engine)
     factory = make_session_factory(engine)
     try:
         yield factory

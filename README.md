@@ -1,161 +1,147 @@
-# SPD-PassaNorte — Backend
+# PassaNorte Backend
 
-Backend do sistema distribuído de gamificação do turismo de Manaus: turistas validam visitas a pontos turísticos por geolocalização, completam rotas e recebem insígnias/brindes; a prefeitura administra o catálogo e acompanha insights. Inclui chatbot de planejamento de roteiro com RAG.
+Backend em adaptação para o MVP. A matriz de rastreabilidade é a fonte de verdade para requisitos; as decisões explícitas do projeto complementam/substituem os pontos indicados no [plano de implementação](docs/planning/PASSANORTE_IMPLEMENTATION_PLAN.md). O código legado não redefine requisitos.
 
-> Cada serviço tem seu próprio `README.md` em `src/services/<serviço>/`, com endpoints, comandos, variáveis de ambiente e notas de implementação.
+A S1 estabelece build reproduzível, configuração explícita e segurança de sessões. Não representa a conclusão do MVP. Veja [evidências da S1](docs/implementation/S1.md) e [decisões de segurança e operação](docs/architecture/ADR-001-S1-security.md).
 
-**Stack:** Python 3.11+ · FastAPI · SQLAlchemy 2.x · Alembic · PostgreSQL 16 (pgvector) · aio-pika (RabbitMQ) · httpx (pull) · JWT HS256 · bcrypt · Fernet · uv · Kong Gateway (DB-less) · Docker Compose
+## Estado e arquitetura
 
----
+Sete processos FastAPI compartilham um banco PostgreSQL 16 com pgvector e um schema por domínio. Só Kong publica uma porta no host, com HTTPS em 8443. RabbitMQ distribui eventos persistentes. As imagens são fixadas por digest e o runtime roda como UID 10001.
 
-## Arquitetura em uma página
+```mermaid
+flowchart TD
+    Cliente --> Kong
+    Kong --> Apps["Seis serviços do MVP"]
+    Kong --> Chatbot["Chatbot opcional"]
+    Apps --> PG["PostgreSQL com schemas por domínio"]
+    Chatbot --> PG
+    Apps --> Rabbit["RabbitMQ com filas duráveis"]
+    Chatbot --> Rabbit
+```
 
-Kong Gateway na borda (porta 8000, config declarativa DB-less em `kong/kong.yml`) + 7 microsserviços + 1 banco por serviço (Princípio I — a query nunca sai do banco próprio), comunicação **REST síncrona (httpx) para consultas pull** e **RabbitMQ (aio-pika) como barramento de eventos** para os efeitos colaterais tolerantes a falhas (D-05), mais um `src/shared/` de biblioteca interna (não é um serviço). Infraestrutura inteira em Docker Compose, custo zero.
+[Limites dos sete serviços e ownership](docs/architecture/ADR-002-S2-service-boundaries.md)
 
-| Componente | Porta | Responsabilidade |
-|---|---|---|
-| [kong](kong/kong.yml) | 8000 | **Borda única**: roteamento `/api/v1/*`, verificação de JWT (plugin `jwt`, `key_claim_name: iss`), CORS centralizado, correlation ID (`X-Request-Id`), rate limiting, `/internal/*` sem rota (404) |
-| [rabbitmq](docker-compose.yml) | 5672 / 15672 | **Barramento de eventos** (AMQP): exchange topic `passanorte.events`; UI de gestão em `:15672` (passanorte/passanorte) |
-| [auth](src/services/auth/README.md) | 8001 | Identidade, RBAC (`admin`/`employee`/`tourist`), sessão JWT, perfis, PII criptografado (Fernet/HMAC) |
-| [catalog](src/services/catalog/README.md) | 8002 | Pontos turísticos, categorias, eventos, cronogramas, deep links |
-| [validation](src/services/validation/README.md) | 8003 | Validação de presença por geolocalização (Haversine + índice parcial único) |
-| [gamification](src/services/gamification/README.md) | 8004 | Rotas, inscrições, progresso derivado, insígnias, brindes, resgate exatamente-uma-vez |
-| [insights](src/services/insights/README.md) | 8005 | Dashboard analítico admin: heatmap, acessos, rankings, distribuições |
-| [notifications](src/services/notifications/README.md) | 8006 | Inscrições por interesse, inbox, dispatch idempotente |
-| [chatbot](src/services/chatbot/README.md) | 8007 | Chatbot de roteiro com RAG sobre o catálogo (pgvector 384d) |
+[Contrato e migração da S3](docs/implementation/S3_BACKEND.md)
 
-### Eventos entre serviços (RabbitMQ, D-05)
+## Primeiro uso local
 
-Os efeitos colaterais que antes eram HTTP fire-and-forget agora são eventos publicados em `passanorte.events` (routing key = tipo) e consumidos por filas durable dentro do próprio processo FastAPI (lifespan). Falha na 1ª entrega → requeue; na redelivery → DLQ `passanorte.dlq` (visível na UI de gestão). Sem `RABBITMQ_URL`, o módulo fica **degradado**: publicação é no-op com um warn único e consumers não iniciam (dev sem docker).
+Pré-requisitos: Docker com Compose v2 e uv. No Windows, inicie Docker Desktop em modo Linux.
 
-| Evento (routing key) | Produtor | Consumer (fila durable) |
-|---|---|---|
-| `visit.validated` | validation (`propagator.py`) | insights (`passanorte.insights.visit.validated` — fatos de visita) |
-| `access.registered` | auth (login) | insights (`passanorte.insights.access.registered` — at-least-once, analytics) |
-| `notification.dispatch` | catalog (spot/event), gamification (rota concluída) | notifications (`passanorte.notifications.dispatch` — dedup por user/kind/source) |
-| `catalog.index.refresh` | catalog (spot/event) | chatbot (`passanorte.chatbot.index.refresh` — re-embed do RAG) |
+A partir da raiz:
 
-- Envelope (`shared/messaging.EventEnvelope`): `{event_id, type, occurred_at, request_id, data}` — o `request_id` propaga o correlation ID entre serviços (logs JSON).
-- Entrega **at-least-once**; os consumers deduplicam (fatos por user+spot+momento, notificações por user+kind+source, índice por delete-then-insert).
-- `GET /health` continua **liveness-only** (sem ping do broker): queda do RabbitMQ não derruba os healthchecks dos serviços; a reconexão é automática (`RobustConnection`).
+```powershell
+Copy-Item .env.example .env
+uv sync --frozen
+uv run --frozen python scripts/generate_secrets.py
+docker compose config --quiet
+docker compose up --build -d --wait --wait-timeout 180
+uv run --frozen python scripts/smoke_s2.py --email admin@example.com
+```
 
-### `src/shared/` (biblioteca interna)
+Em Linux/macOS use `cp .env.example .env`. O admin padrão de desenvolvimento usa o **email** admin@example.com; sua senha aleatória está no arquivo local `secrets/admin-password`, nunca nos logs. Leia-a privadamente para entrar. O gerador recusa diretório já existente, preservando chaves persistentes.
 
-- `app.py` — app factory: prefixo `/api/v1`, `GET /health` (liveness, sem ping de banco), middleware de correlation ID, handlers de erro, lifespan do barramento AMQP
-- `errors.py` — envelope único `{"error": {code, message, details}}` + header `X-Request-Id` em toda resposta; 500 nunca vaza detalhes
-- `logging.py` — log JSON por linha com `request_id`; `X-Request-Id` gerado pelo Kong na borda ou herdado do cliente, propagado ao serviço
-- `security.py` — JWT HS256 (access 15 min / refresh 7 dias), bcrypt (rounds 12), Fernet para PII, HMAC-SHA256 para unicidade de documento
-- `db.py` — `Base` compartilhado, engine por request (com `pool_pre_ping`), um database por serviço; `service_session_factory()` cacheada para os consumers
-- `messaging.py` — barramento RabbitMQ (aio-pika): envelope de eventos, `publish()` sync nunca-bloqueante, consumers com requeue/DLQ, seam de teste `set_publisher`
-- `audit.py` / `audit_model.py` — `AuditLog` declarado uma vez, reexportado; auditoria gravada na mesma transação da ação
-- `*_client.py` — wrappers de publicação de eventos (notifications, tracking de insights, chatbot): mesmas assinaturas do antigo HTTP fire-and-forget, agora via `messaging.publish`
+O script gera arquivos de desenvolvimento; produção deve provisionar os equivalentes via secret manager. Proteja a pasta com ACLs do host. Os arquivos são legíveis pelo UID do contêiner; no Linux a pasta pai privada restringe acesso no host. Não coloque segredos no Dockerfile, argumentos de build, Git, linha de comando ou logs.
 
-Defesa em profundidade: o Kong valida a assinatura/expiração dos JWTs na borda (single Consumer casando o claim `iss`) e cada serviço repete a verificação de tipo de token e papéis com `require_role`. `/internal/*` não tem autenticação entre serviços — a proteção é a ausência de rota no Kong (404) e a rede interna. Rotas públicas (cadastro, login, leitura do catálogo, `GET /routes`) passam pela borda sem token; `POST /categories`/`POST /events` e demais escritas exigem JWT no Kong e são filtradas por papel no serviço.
+`provision` cria papéis e schemas, `migrate` aplica Alembic por serviço, `seed` cria o admin somente se ausente, e a stack inicia os serviços após essas etapas. Um email existente de outro papel ou admin desativado causa falha, sem promoção nem reativação implícita.
 
-> **Nota sobre o envelope de erro na borda:** respostas geradas no próprio Kong (401 de token inválido, 404 de rota desconhecida, 429 de rate limit, 502/504 de serviço indisponível/timeout) usam o formato do Kong (`{"message": ...}`), não o envelope `{"error": {code, message, details}}` do projeto — o `X-Request-Id` continua presente em todas. Clientes devem ramificar por HTTP status quando a resposta não tem a chave `error`.
+Para parar mantendo os dados: `docker compose down`. **Não remova volumes ou regenere chaves para corrigir inicialização.** Credenciais de volumes existentes não são alteradas automaticamente pelo Compose; veja o procedimento de transição no ADR.
 
----
+## Configuração
 
-## Pré-requisitos
+`.env` serve à **interpolação do Compose**. O contêiner recebe somente as variáveis declaradas em `environment` e os arquivos montados. O Python não carrega `.env` implicitamente. Para execução fora do Docker, use `uv run --env-file CAMINHO ...` com valores/arquivos próprios do host.
 
-- [uv](https://docs.astral.sh/uv/) 0.12+
-- Docker Compose (para banco e serviços)
-- Python 3.11+
+| Variável | Consumidor / política |
+| --- | --- |
+| APP_ENV | development, test ou production; padrão production. SQLite é permitido apenas em test |
+| DATABASE_URL_FILE | Cada serviço recebe seu arquivo; URL postgresql+psycopg obrigatória |
+| RABBITMQ_URL_FILE | Todos os serviços; obrigatório fora de test; sem fallback silencioso |
+| JWT_PUBLIC_KEYS_DIR | Todos os serviços e Kong; diretório com arquivos KID.pem |
+| JWT_PRIVATE_KEY_FILE / JWT_ACTIVE_KID | Somente auth; chave RSA privada correspondente ao KID ativo |
+| JWT_ISSUER / JWT_AUDIENCE | Identidade esperada, iguais em todos os verificadores |
+| ACCESS_TOKEN_MINUTES / REFRESH_TOKEN_DAYS | Padrões 15 / 7; intervalos aceitos 1–60 / 1–30 |
+| PII_ENCRYPTION_KEY_FILE | Somente auth; chave Fernet ou lista ordenada nova,antiga durante rotação |
+| PII_HMAC_KEY_FILE | Somente auth; chave independente, pelo menos 32 bytes |
+| ADMIN_PASSWORD_FILE | Somente seed; entrada oculta também disponível no CLI interativo |
+| DB_CREDENTIAL_DIR | Provisionamento e migrations com arquivo por domínio e papel |
+| CATALOG_SERVICE_URL / GAMIFICATION_SERVICE_URL | Endereços privados das APIs internas |
+| INTERNAL_API_TOKEN_FILE | Token compartilhado para HTTP interno |
+| EDGE_PUBLIC_URL / EDGE_CORS_ORIGIN | URL HTTPS usada no OpenAPI e origem permitida por CORS |
+| RABBITMQ_HOSTNAME | Nome estável do nó. Para reutilizar um volume legado do RabbitMQ, preserve o hostname original antes de recriar o contêiner |
+| LLM_PROVIDER | chatbot: stub, ollama ou adaptador legado gemini |
+| LLM_OLLAMA_URL / LLM_OLLAMA_MODEL | Nomes reais usados pelo adaptador Ollama |
+| LLM_GEMINI_API_KEY_FILE | Somente para uso explícito do adaptador legado; não montado por padrão |
+| SECRETS_DIR / ADMIN_EMAIL | Interpolação Compose: pasta de segredos e email do bootstrap |
 
-## Como rodar
+Segredos também aceitam o nome sem `_FILE` para integração com gerenciadores externos. Definir ambos é erro. URLs, chaves e limites são validados; erros de configuração não incluem os valores sensíveis. Chaves não são geradas na inicialização.
 
-### Com Docker Compose (recomendado)
+## API e autenticação
+
+Em `development` ou `test`, use `https://localhost:8443/docs/{service}` e `https://localhost:8443/openapi/{service}.json`. Confie no certificado de desenvolvimento para o ambiente local. Abra o [Swagger de Identidade](https://localhost:8443/docs/auth), execute `POST /api/v1/session` com **Try it out** e use o `access_token` em **Authorize** para testar `GET /api/v1/me`. O schema usa `EDGE_PUBLIC_URL`. Em produção, Swagger e OpenAPI ficam desabilitados. O perfil `chatbot` habilita a documentação do Chatbot. Kong reserva `/me/balance` e `/me/coupons` para Benefícios.
+
+Rotas principais de identidade sob `https://localhost:8443/api/v1`:
+
+| Método / rota | Contrato |
+| --- | --- |
+| POST /tourists | Cadastro público com documento validado e aceite versionado |
+| POST /session | email/password; retorna access_token, refresh_token, expires_in |
+| POST /session/refresh | Corpo {"refresh_token":"..."}; retorna **novo par** |
+| DELETE /session | Mesmo corpo; revoga a família da sessão; não exige access válido |
+| GET /me | Authorization: Bearer ACCESS_TOKEN |
+| PATCH /me | Atualização de perfil autenticado |
+
+Access tokens usam RS256 e exigem assinatura, algoritmo, kid conhecido, exp, iat, sub, iss, aud, type, role e jti. Kong identifica a chave por `kid`; cada serviço repete a validação completa. Um refresh token não autoriza endpoints de negócio. Senhas: mínimo de 8 caracteres no cadastro e máximo de 72 bytes UTF-8, compatível com bcrypt.
+
+O servidor guarda o hash do jti de refresh, usuário, família, expiração e revogação. Rotação é atômica. Reutilizar refresh consumido revoga a família, inclusive os descendentes: clientes devem serializar a renovação e substituir o par armazenado. Logout é idempotente enquanto o refresh apresentado for válido. Access já emitido continua válido até expirar (máximo configurado de 60 min; padrão 15); revogação imediata distribuída não é prometida.
+
+## Desenvolvimento e verificações
+
+```powershell
+uv sync --frozen
+uv lock --check
+uv run --frozen ruff check src tests scripts
+uv run --frozen mypy src
+uv run --frozen pytest -q
+uv run --frozen python scripts/check_secrets.py
+uv run --frozen python scripts/smoke_s2.py --email admin@example.com
+```
+
+O scanner usa Docker/Gitleaks fixado por digest e analisa a árvore de trabalho visível ao Git (incluindo arquivos novos não ignorados), com achados redigidos. Não certifica o histórico Git nem arquivos locais ignorados. Os testes unitários/contrato usam SQLite e chaves efêmeras geradas exclusivamente nas fixtures; o smoke usa PostgreSQL, RabbitMQ e Kong reais.
+
+A [CI](.github/workflows/ci.yml) executa lock, lint, tipagem, testes, scan, build e smoke. Documentos de serviços antigos podem conter nomenclatura anterior; este README e o plano prevalecem até sua revisão nas respectivas sprints.
+
+Para verificar a recuperação em uma stack de desenvolvimento já iniciada com `.env.example`, execute `bash scripts/verify_s2_recovery.sh`. No PowerShell com Git para Windows, use `& "C:\Program Files\Git\bin\bash.exe" scripts/verify_s2_recovery.sh`. O ensaio interrompe o RabbitMQ, confirma o registro de um evento na outbox durante a interrupção, verifica o reinício automático de Identidade e confirma que o mesmo evento chegou à inbox de Indicadores após a recuperação.
+
+## Migração e reconciliação
+
+Para ensaiar a migração com dados fictícios, execute `bash scripts/verify_s2_migration.sh`. O script usa as revisões históricas da S1, cria um projeto Compose temporário e verifica reversão, aplicação e repetição da migração. Os relatórios JSON saem no terminal e o ambiente temporário é removido no fim.
+
+Restaure cópias congeladas dos sete bancos S1 em um ambiente isolado. Prepare um alvo S2 vazio com `provision` e `migrate`. Importe antes de executar `seed` e preserve as chaves PII que abrem os dados das cópias.
+
+Prepare arquivos privados com DSNs no formato `postgresql://`. No diretório de origem, use os nomes `auth.dsn`, `catalog.dsn`, `gamification.dsn`, `validation.dsn`, `insights.dsn`, `notifications.dsn` e `chatbot.dsn`. O DSN do alvo aponta para o banco `passanorte` isolado, acessado por uma conta de implantação.
 
 ```bash
-docker compose up --build
+uv run --frozen python scripts/migrate_legacy.py --source-dir /seguro/s1 \
+  --target-dsn-file /seguro/s2.dsn --report /seguro/reconciliacao.json
 ```
 
-Sobe o Postgres (`pgvector/pgvector:pg16`), o RabbitMQ (`rabbitmq:3.13-management-alpine`, AMQP :5672 + UI :15672), o Kong (`kong:3.9`, DB-less) e os 7 microsserviços (portas 8001–8007). O script `scripts/init-databases.sh` cria automaticamente os 7 databases (`passanorte_auth`, `passanorte_catalog`, ...) e a extensão `vector` no banco do chatbot.
+O ensaio compara contagens, conteúdo e vínculos e registra a quantidade de contas `employee`. Por padrão a transação é revertida. Para persistir a importação no alvo isolado, use `--commit` e um novo caminho para o relatório. Uma divergência reverte toda a importação.
 
-Borda única em `http://localhost:8000/api/v1/...` — os clientes só precisam desse endereço (o Kong não serve `/docs`; cada serviço mantém o próprio em `http://localhost:<porta>/docs`, exposto apenas no loopback). A config declarativa do Kong (`kong/kong.yml`) renderiza `JWT_SECRET`/`JWT_ISSUER` do `.env` no boot via `kong/entrypoint-render.sh`.
-
-### Desenvolvimento local (sem Docker)
-
-1. Suba apenas o banco e crie os databases:
-
-   ```bash
-   docker compose up db -d
-   ```
-
-2. Instale as dependências e rode um serviço (ex.: auth):
-
-   ```bash
-   uv sync
-   uv run uvicorn services.auth.app.main:app --port 8001
-   ```
-
-   Cada serviço resolve seu banco por `DATABASE_URL` (ex.: `postgresql://passanorte:passanorte@localhost:5432/passanorte_auth`; sem a variável, cai em `sqlite:///./dev.db`). A raiz de imports é `src/` (`services.*` e `shared.*`).
-
-3. Credencial inicial de admin (RF01):
-
-   ```bash
-   uv run python scripts/create_admin.py --email admin@passanorte.com --password '...'
-   # sem --password, gera uma senha forte aleatória e a imprime
-   ```
-
-   No docker compose isso roda sozinho: o serviço one-shot `seed` (depende do
-   `migrate`) cria `ADMIN_EMAIL` (default `admin@passanorte.com`) com
-   `ADMIN_PASSWORD` — se vazia, gera uma aleatória e imprime nos logs do
-   container. Idempotente (`--if-missing`): nada faz se o admin já existir.
-
-### Variáveis de ambiente
-
-Compartilhadas por todos os serviços (ver `docker-compose.yml`; há um `.env.example` na raiz):
-
-| Variável | Uso | Default |
-|---|---|---|
-| `DATABASE_URL` | Postgres do serviço | obrigatória em produção (sem ela cai em SQLite silenciosamente) |
-| `JWT_SECRET` | assinatura/validação de tokens, compartilhado (serviços + Kong) | compose: `change-me-in-production`; código: default de desenvolvimento |
-| `JWT_ISSUER` | claim `iss` dos JWTs; deve casar com a credencial do Consumer no `kong/kong.yml` | `passanorte` |
-| `PII_ENCRYPTION_KEY` | criptografia de PII (CPF/passaporte, Fernet) **e** chave do HMAC de unicidade; se definida mas **vazia**, a importação de `shared.security` falha | sem ela, uma chave **efêmera** é gerada a cada processo (dados ficam irrecuperáveis em restart) |
-| `<SERVIÇO>_SERVICE_URL` | URL base de cada serviço p/ consultas REST inter-serviço (pull) | fallback `http://localhost:<porta>` |
-| `RABBITMQ_URL` | barramento de eventos entre serviços (D-05); compose fixa `amqp://passanorte:passanorte@rabbitmq:5672/`. **Vazio = degradado** (publicação no-op com warn 1 vez, consumers não rodam) | compose define sempre; dev sem docker: vazio |
-| `ACCESS_TOKEN_MINUTES` / `REFRESH_TOKEN_DAYS` | validade dos JWTs (compartilhadas via `shared/security`) | `15` / `7` |
-| `LLM_PROVIDER` | provider do chatbot: `stub` \| `gemini` \| `ollama` | `stub` |
-| `LLM_GEMINI_API_KEY` / `LLM_OLLAMA_URL` / `LLM_OLLAMA_MODEL` | credenciais do provider escolhido | ollama: `http://localhost:11434`, modelo `llama3.1` |
-
-> O compose repassa ao container do chatbot apenas `LLM_PROVIDER` — as credenciais do provider (`LLM_GEMINI_API_KEY`, `LLM_OLLAMA_*`) precisam ser injetadas à parte em produção.
->
-> **Cuidado:** o `.env.example` atual usa os nomes `GEMINI_API_KEY` e `OLLAMA_BASE_URL`, que o código **não lê** (os nomes válidos são `LLM_GEMINI_API_KEY` e `LLM_OLLAMA_URL`); `TOLERANCE_RADIUS_DEFAULT_M` também não é lida (o raio de tolerância vive no catalog, por ponto).
-
-> **Nota sobre migrations:** cada serviço tem scaffold Alembic (`alembic/env.py`) e a migração inicial já gerada em `alembic/versions/`. Os `app/models/__init__.py` importam os modelos para registrá-los no metadata do Alembic — novos modelos precisam ser adicionados lá. Em dev, o schema é criado via `Base.metadata.create_all` pelos testes; para (re)gerar migrações use `scripts/generate_migrations.sh [serviço...] [-m "mensagem"]` — por padrão compara os modelos contra um banco SQLite vazio temporário, ou use `--database-url 'postgresql://...passanorte_{svc}'` para dif contra o Postgres (migrações incrementais).
-
----
-
-## Testes e qualidade
+## Backup, restauração e diagnóstico
 
 ```bash
-uv run pytest                 # unit, integration e contract (pytest-asyncio, modo auto)
-uv run pytest --cov           # cobertura (fontes: src/services, src/shared)
-uv run ruff check .           # lint (line-length 120)
-uv run ruff format .
-uv run mypy src               # type check (namespace packages, alembic excluído)
+umask 077
+docker compose exec -T db pg_dump -U passanorte -C -Fc -d passanorte > passanorte.dump
+bash scripts/verify_s2_restore.sh
+docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U passanorte -d passanorte < scripts/verify_s2_privileges.sql
 ```
 
-Os testes de contrato cobrem os 7 user stories (`tests/contract/test_*_us*.py`); os de integração exercem as jornadas completas (turista, admin, visitas, gamificação, insights, notificações, chatbot); os unit cobrem invariantes (RBAC, Haversine, sessão, RAG, invariants de gamificação). O Kong não participa dos testes em processo — a config é validada no boot (`kong config parse`, ver abaixo).
+O ensaio restaura em um banco temporário do mesmo cluster, compara o snapshot e verifica a separação dos schemas. Em recuperação para um cluster vazio, recrie os papéis do ambiente, preserve chaves e credenciais e restaure o backup com `pg_restore -U passanorte -d postgres --create --exit-on-error`. Após restaurar, execute a verificação de privilégios e o smoke HTTPS antes de direcionar o tráfego.
 
----
-
-## Estrutura do repositório
-
-```
-├── docker-compose.yml        # Postgres (pgvector) + RabbitMQ (:5672) + Kong :8000 + 7 serviços, portas 8001–8007
-├── Dockerfile                # imagem única uv + python3.11-slim (comando por serviço no compose)
-├── .env.example              # variáveis compartilhadas (ver caveat sobre nomes do provider acima)
-├── kong/
-│   ├── kong.yml              # config declarativa DB-less do gateway (rotas, plugins, Consumer jwt)
-│   └── entrypoint-render.sh  # injeta JWT_SECRET/JWT_ISSUER do .env no boot
-├── scripts/
-│   ├── init-databases.sh     # cria 7 databases + ext. vector (roda no init do Postgres)
-│   └── create_admin.py       # credencial inicial do admin (RF01)
-├── src/
-│   ├── shared/               # biblioteca interna (não é serviço): app factory, security, db, erros, logging, audit, barramento RabbitMQ
-│   └── services/             # 7 microsserviços de domínio, cada um com app/, alembic/ e README.md
-├── specs/                    # contratos REST por user story (specs/001-passaporte-turistico-backend)
-└── tests/                    # unit / integration / contract
-```
+| Sintoma | Diagnóstico |
+| --- | --- |
+| Falha na inicialização | Consulte `docker compose ps -a` e `docker compose logs provision migrate seed` |
+| Processo responde, mas está indisponível | `/health` indica processo vivo. `/ready` verifica a tabela de entrega e a conexão ao broker |
+| Swagger retorna 404 | Confira `APP_ENV`, o nome do serviço e o perfil `chatbot` |
+| Certificado recusado | Confira o hostname de `EDGE_PUBLIC_URL` e passe a CA ao smoke com `--ca` |
+| Evento pendente | Consulte a outbox e os logs `outbox_retry` |
+| Evento na DLQ | Identifique tipo, versão e `event_id`. Preserve o ID e o correlation ID em eventual reenvio |

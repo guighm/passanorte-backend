@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import logging
 
+from sqlalchemy.orm import Session
+
 from shared import messaging
 
 logger = logging.getLogger("chatbot_client")
 
 
-def refresh_index(items: list[dict]) -> None:
+def refresh_index(items: list[dict], *, db: Session | None = None) -> None:
     """Publica um evento `catalog.index.refresh` (idempotente no consumer)."""
-    messaging.publish("catalog.index.refresh", {"items": items})
+    messaging.enqueue(db, "catalog.index.refresh", {"items": items})

@@ -17,6 +17,10 @@ class TouristSpotOut(BaseModel):
     latitude: float
     longitude: float
     status: str
+    address: str | None = None
+    image_url: str | None = None
+    duration_minutes: int | None = None
+    maps_url: str
     categories: list[CategoryOut] = Field(default_factory=list)
 
 
@@ -24,6 +28,7 @@ class TouristSpotDetail(TouristSpotOut):
     tolerance_radius_m: int
     schedule: list[dict] = Field(default_factory=list)
     events: list[dict] = Field(default_factory=list)
+    timezone: str
 
 
 class TouristSpotList(BaseModel):

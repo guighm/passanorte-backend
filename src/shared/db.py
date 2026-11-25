@@ -1,37 +1,37 @@
-"""Banco compartilhado: Base declarativa, engine e sessão por serviço (T011).
-
-Cada microsserviço aponta DATABASE_URL para o SEU database (Princípio I).
-"""
-
 from __future__ import annotations
 
-import os
 from functools import lru_cache
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy import Engine, create_engine
+from sqlalchemy.orm import Session, sessionmaker
 
+from shared.settings import Settings
 
-class Base(DeclarativeBase):
-    pass
+DOMAINS = ("auth", "catalog", "gamification", "benefits", "insights", "notifications", "chatbot")
 
 
 def database_url() -> str:
-    url = os.environ.get("DATABASE_URL", "sqlite:///./dev.db")
+    url = Settings.load().database_url.get_secret_value()
     return url
 
 
-def create_service_engine(echo: bool = False):
-    return create_engine(database_url(), echo=echo, pool_pre_ping=True)
+def create_service_engine(echo: bool = False) -> Engine:
+    url = database_url()
+    engine = create_engine(
+        url, echo=echo, pool_pre_ping=True, hide_parameters=True,
+        **({"pool_size": 5, "max_overflow": 2, "pool_timeout": 5, "connect_args": {"connect_timeout": 3}}
+           if url.startswith("postgresql") else {}),
+    )
+    if engine.dialect.name == "sqlite":
+        return engine.execution_options(schema_translate_map={name: None for name in DOMAINS})
+    return engine
 
 
-def make_session_factory(engine) -> sessionmaker[Session]:
+def make_session_factory(engine: Engine) -> sessionmaker[Session]:
     return sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
 @lru_cache(maxsize=1)
 def service_session_factory() -> sessionmaker[Session]:
-    """Factory de sessão cacheada por processo — usada pelos consumers AMQP
-    (o `get_db` dos endpoints reconstrói engine por request; o consumer
-    reusa um só engine)."""
+    """One pool per service process, shared by HTTP dependencies and consumers."""
     return make_session_factory(create_service_engine())

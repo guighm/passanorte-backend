@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from services.auth.app.core import deps
+from services.auth.app.core.categories import get_category_lookup
 from services.auth.app.main import create_test_app
 
 
@@ -17,6 +18,7 @@ from services.auth.app.main import create_test_app
 def client(db_session) -> TestClient:
     app = create_test_app()
     app.dependency_overrides[deps.get_db] = lambda: db_session
+    app.dependency_overrides[get_category_lookup] = lambda: set
     return TestClient(app)
 
 
@@ -28,6 +30,7 @@ def tourist_payload(**overrides) -> dict:
         "password": "s3cr3t!x",
         "phone": "+55 92 99999-0000",
         "country_of_origin": "Brasil",
+            "consent_version": "1", "accept_terms": True, "accept_privacy": True,
     }
     base.update(overrides)
     return base
@@ -36,12 +39,12 @@ def tourist_payload(**overrides) -> dict:
 # --- POST /tourists (RF22) --------------------------------------------------
 
 def test_register_tourist_returns_201(client: TestClient):
-    resp = client.post("/api/v1/tourists", json=tourist_payload(cpf="123.456.789-00"))
+    resp = client.post("/api/v1/tourists", json=tourist_payload(cpf="529.982.247-25"))
     assert resp.status_code == 201
     body = resp.json()
     assert body["email"] == "ana@example.com"
     # PII nunca em claro na resposta (RNF08)
-    assert "123.456.789-00" not in resp.text
+    assert "529.982.247-25" not in resp.text
 
 
 def test_register_tourist_requires_document_identity(client: TestClient):
@@ -50,21 +53,39 @@ def test_register_tourist_requires_document_identity(client: TestClient):
     assert resp.status_code == 422
 
 
+def test_invalid_cpf_and_missing_consent_are_rejected(client):
+    bad_cpf = tourist_payload(cpf="111.111.111-11")
+    response = client.post("/api/v1/tourists", json=bad_cpf)
+    assert response.status_code == 422
+    assert bad_cpf["cpf"] not in response.text and bad_cpf["password"] not in response.text
+    missing = tourist_payload(cpf="529.982.247-25")
+    del missing["accept_privacy"]
+    assert client.post("/api/v1/tourists", json=missing).status_code == 422
+
+
+def test_tourist_login_is_not_allowed_on_panel(client):
+    assert client.post("/api/v1/tourists", json=tourist_payload(cpf="52998224725")).status_code == 201
+    response = client.post("/api/v1/session", json={
+        "email": "ana@example.com", "password": "s3cr3t!x", "panel": True,
+    })
+    assert response.status_code == 403
+
+
 def test_register_duplicate_document_returns_409(client: TestClient):
-    client.post("/api/v1/tourists", json=tourist_payload(cpf="123.456.789-00"))
-    resp = client.post("/api/v1/tourists", json=tourist_payload(email="other@example.com", cpf="123.456.789-00"))
+    client.post("/api/v1/tourists", json=tourist_payload(cpf="529.982.247-25"))
+    resp = client.post("/api/v1/tourists", json=tourist_payload(email="other@example.com", cpf="52998224725"))
     assert resp.status_code == 409
 
 
 def test_register_duplicate_email_returns_409(client: TestClient):
-    client.post("/api/v1/tourists", json=tourist_payload(cpf="111.111.111-11"))
+    client.post("/api/v1/tourists", json=tourist_payload(cpf="52998224725"))
     resp = client.post("/api/v1/tourists", json=tourist_payload(email="ana@example.com", passport="BR123456"))
     assert resp.status_code == 409
 
 
 def test_error_body_is_standardized(client: TestClient):
-    resp = client.post("/api/v1/tourists", json=tourist_payload(cpf="123.456.789-00"))
-    resp = client.post("/api/v1/tourists", json=tourist_payload(cpf="123.456.789-00"))
+    resp = client.post("/api/v1/tourists", json=tourist_payload(cpf="529.982.247-25"))
+    resp = client.post("/api/v1/tourists", json=tourist_payload(cpf="529.982.247-25"))
     body = resp.json()
     assert set(body["error"].keys()) >= {"code", "message", "details"}
     assert "X-Request-Id" in resp.headers
@@ -73,7 +94,7 @@ def test_error_body_is_standardized(client: TestClient):
 # --- POST /session (RF02/RF23, D-01) ----------------------------------------
 
 def test_login_with_valid_email_and_password(client: TestClient):
-    client.post("/api/v1/tourists", json=tourist_payload(cpf="123.456.789-00"))
+    client.post("/api/v1/tourists", json=tourist_payload(cpf="529.982.247-25"))
     resp = client.post("/api/v1/session", json={"email": "ana@example.com", "password": "s3cr3t!x"})
     assert resp.status_code == 200
     body = resp.json()
@@ -81,7 +102,7 @@ def test_login_with_valid_email_and_password(client: TestClient):
 
 
 def test_login_with_invalid_credentials_is_generic(client: TestClient):
-    client.post("/api/v1/tourists", json=tourist_payload(cpf="123.456.789-00"))
+    client.post("/api/v1/tourists", json=tourist_payload(cpf="529.982.247-25"))
     resp = client.post("/api/v1/session", json={"email": "ana@example.com", "password": "wrong"})
     assert resp.status_code == 401
     # mensagem genérica não revela qual campo falhou (Princípio III)
@@ -94,7 +115,7 @@ def test_login_with_unknown_email_is_same_error(client: TestClient):
 
 
 def test_refresh_returns_new_tokens(client: TestClient):
-    client.post("/api/v1/tourists", json=tourist_payload(cpf="123.456.789-00"))
+    client.post("/api/v1/tourists", json=tourist_payload(cpf="529.982.247-25"))
     login = client.post("/api/v1/session", json={"email": "ana@example.com", "password": "s3cr3t!x"}).json()
     resp = client.post("/api/v1/session/refresh", json={"refresh_token": login["refresh_token"]})
     assert resp.status_code == 200
@@ -109,7 +130,7 @@ def auth_headers(client: TestClient) -> dict:
 
 
 def test_me_returns_authenticated_tourist(client: TestClient):
-    client.post("/api/v1/tourists", json=tourist_payload(cpf="123.456.789-00"))
+    client.post("/api/v1/tourists", json=tourist_payload(cpf="529.982.247-25"))
     resp = client.get("/api/v1/me", headers=auth_headers(client))
     assert resp.status_code == 200
     assert resp.json()["email"] == "ana@example.com"
@@ -117,12 +138,12 @@ def test_me_returns_authenticated_tourist(client: TestClient):
 
 
 def test_me_requires_token(client: TestClient):
-    client.post("/api/v1/tourists", json=tourist_payload(cpf="123.456.789-00"))
+    client.post("/api/v1/tourists", json=tourist_payload(cpf="529.982.247-25"))
     assert client.get("/api/v1/me").status_code == 401
 
 
 def test_patch_me_updates_profile(client: TestClient):
-    client.post("/api/v1/tourists", json=tourist_payload(cpf="123.456.789-00"))
+    client.post("/api/v1/tourists", json=tourist_payload(cpf="529.982.247-25"))
     headers = auth_headers(client)
     resp = client.patch("/api/v1/me", json={"name": "Ana Maria"}, headers=headers)
     assert resp.status_code == 200
@@ -130,7 +151,7 @@ def test_patch_me_updates_profile(client: TestClient):
 
 
 def test_put_interests_persists_selection(client: TestClient):
-    client.post("/api/v1/tourists", json=tourist_payload(cpf="123.456.789-00"))
+    client.post("/api/v1/tourists", json=tourist_payload(cpf="529.982.247-25"))
     headers = auth_headers(client)
     resp = client.put(
         "/api/v1/me/interests",

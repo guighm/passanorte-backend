@@ -52,14 +52,14 @@ def _serialise(visit: Visit) -> dict:
     }
 
 
-@router.post("/visits", status_code=status.HTTP_201_CREATED)
+@router.post("/visits", status_code=status.HTTP_201_CREATED, response_model=None)
 def mark_visit(
     payload: VisitCreate,
     claims: dict = Depends(get_current_user),
     snapshot_for: Callable = Depends(get_catalog_snapshot),
     propagate: Callable = Depends(get_propagator),
     db: Session = Depends(get_db),
-) -> dict:
+) -> dict | JSONResponse:
     """Marcar visitação: Haversine contra o raio do ponto (RF31–RF33, D-10)."""
     if claims.get("role") != "tourist":
         raise ApiError(code="forbidden", message="Apenas turistas registram visitações.", status_code=403)
@@ -90,17 +90,19 @@ def mark_visit(
         )
         db.add(visit)
         db.flush()
-        db.commit()
         log_event(logger, "visit_validated", user_id=claims["sub"], spot_id=payload.tourist_spot_id,
                   distance_m=round(distance_m, 2))
         # propagação do fato via barramento RabbitMQ (D-05): insights consome
-        propagate(
-            {
-                "user_id": claims["sub"],
-                "tourist_spot_id": payload.tourist_spot_id,
-                "occurred_at": str(visit.occurred_at),
-            }
-        )
+        fact = {
+            "user_id": claims["sub"],
+            "tourist_spot_id": payload.tourist_spot_id,
+            "occurred_at": str(visit.occurred_at),
+        }
+        if propagate is get_propagator():
+            propagate(fact, db=db)
+        else:
+            propagate(fact)
+        db.commit()
         return {
             "id": visit.id,
             "tourist_spot_id": visit.tourist_spot_id,

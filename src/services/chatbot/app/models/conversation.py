@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from sqlalchemy import DateTime, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from shared.db import Base
+from services.chatbot.app.db import Base
 
 
 class Conversation(Base):

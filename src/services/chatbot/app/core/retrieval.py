@@ -8,7 +8,9 @@ opções de roteiro (`retrieve_available`), nunca inventado (SC-009).
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from services.chatbot.app.core.embeddings import Embedder, cosine_similarity
@@ -18,7 +20,10 @@ _CLOSED = {"temporarily_closed", "permanently_closed"}
 
 
 def _rows(db: Session) -> list[EmbeddedContent]:
-    return db.query(EmbeddedContent).all()
+    end = func.coalesce(EmbeddedContent.ends_at, EmbeddedContent.occurs_at)
+    return db.query(EmbeddedContent).filter(
+        or_(EmbeddedContent.source_type != "event", end > datetime.now(UTC).replace(tzinfo=None)),
+    ).all()
 
 
 def retrieve(db: Session, embedder: Embedder, query: str, top_k: int = 5) -> list[EmbeddedContent]:

@@ -16,10 +16,10 @@ from services.catalog.app.main import create_test_app
 
 
 @pytest.fixture
-def client(db_session) -> TestClient:
+def client(db_session, internal_headers) -> TestClient:
     app = create_test_app()
     app.dependency_overrides[deps.get_db] = lambda: db_session
-    return TestClient(app)
+    return TestClient(app, headers=internal_headers)
 
 
 def create_spot(client: TestClient, **overrides) -> dict:
@@ -72,13 +72,34 @@ def test_list_spots_filters_by_status(client: TestClient):
     assert body["items"][0]["name"] == "A"
 
 
-def test_list_spots_orders_by_proximity_when_coordinates_given(client: TestClient):
+def test_list_spots_orders_by_proximity_when_coordinates_given(client: TestClient, db_session):
+    from services.catalog.app.models.spot import Category
+
+    db_session.add(Category(id="interest", name="Cultura"))
+    db_session.commit()
     # Teatro Amazonas (centro de Manaus) vs. ponto distante
-    create_spot(client, name="Perto", latitude=-3.4711, longitude=-60.0237)
-    create_spot(client, name="Longe", latitude=-3.0, longitude=-60.0)
-    resp = client.get("/api/v1/tourist-spots", params={"lat": "-3.4704", "lng": "-60.0238"})
+    create_spot(client, name="Perto", latitude=-3.4711, longitude=-60.0237, category_ids=["interest"])
+    create_spot(client, name="Longe", latitude=-3.0, longitude=-60.0, category_ids=["interest"])
+    resp = client.get("/api/v1/tourist-spots", params={"lat": "-3.4704", "lng": "-60.0238", "interests": "interest"})
     names = [item["name"] for item in resp.json()["items"]]
     assert names[0] == "Perto"
+
+
+def test_discovery_interest_priority_and_name_fallback(client, db_session):
+    from services.catalog.app.models.spot import Category
+
+    db_session.add(Category(id="culture", name="Cultura"))
+    db_session.commit()
+    create_spot(client, name="Alameda", latitude=0, longitude=0)
+    create_spot(client, name="Zoológico", latitude=20, longitude=20, category_ids=["culture"])
+    create_spot(client, name="Atrativo removido", status="permanently_closed")
+    params = {"lat": 0, "lng": 0, "interests": "culture"}
+    ranked = client.get("/api/v1/tourist-spots", params=params).json()["items"]
+    assert [row["name"] for row in ranked] == ["Zoológico", "Alameda"]
+    for partial in ({"interests": "culture"}, {"lat": 0, "lng": 0}):
+        fallback = client.get("/api/v1/tourist-spots", params=partial).json()["items"]
+        assert [row["name"] for row in fallback] == ["Alameda", "Zoológico"]
+    assert ranked[0]["maps_url"].startswith("https://www.google.com/maps/")
 
 
 # --- GET /tourist-spots/{id} (RF27) ------------------------------------------

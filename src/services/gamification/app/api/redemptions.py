@@ -11,7 +11,7 @@ from services.gamification.app.core.redemptions import redeem
 
 router = APIRouter(tags=["redemptions"])
 
-require_employee = require_role("employee")
+require_operator = require_role("admin", "supplier")
 
 
 class RedemptionCreate(BaseModel):
@@ -21,7 +21,7 @@ class RedemptionCreate(BaseModel):
 @router.post("/redemptions")
 def create_redemption(
     payload: RedemptionCreate,
-    claims: dict = Depends(require_employee),
+    claims: dict = Depends(require_operator),
     db: Session = Depends(get_db),
 ) -> dict:
     """Escaneia código: valida, concede brinde e baixa estoque (RF21, FR-027)."""

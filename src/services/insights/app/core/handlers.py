@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
-from services.insights.app.models.facts import AccessLog, VisitFact
+from services.insights.app.models.facts import AccessLog, TouristLogin, VisitFact
 from shared.db import service_session_factory
 from shared.logging import log_event
 
@@ -51,7 +51,7 @@ def ingest_visit_fact(db: Session, payload: dict) -> dict:
         occurred_at=occurred_at,
     )
     db.add(fact)
-    db.commit()
+    db.flush()
     log_event(logger, "visit_fact_ingested", user_id=payload["user_id"], spot_id=payload["tourist_spot_id"])
     return {"id": fact.id, "status": "ingested"}
 
@@ -60,13 +60,18 @@ def ingest_access(db: Session, payload: dict) -> dict:
     """Registro de acesso à aplicação (RF07)."""
     access = AccessLog(user_id=payload["user_id"], client=payload.get("client"))
     db.add(access)
-    db.commit()
+    db.flush()
     log_event(logger, "access_ingested", user_id=payload["user_id"])
     return {"id": access.id, "status": "ingested"}
 
 
 def handle_visit_fact(data: dict) -> None:
     _consume(ingest_visit_fact, data)
+
+
+def ingest_tourist_login(db: Session, payload: dict) -> None:
+    db.add(TouristLogin(user_id=payload["user_id"], occurred_at=_parse_ts(payload.get("occurred_at"))))
+    db.flush()
 
 
 def handle_access(data: dict) -> None:
@@ -77,5 +82,6 @@ def _consume(ingest_fn, data: dict) -> None:
     db = service_session_factory()()
     try:
         ingest_fn(db, data)
+        db.commit()
     finally:
         db.close()

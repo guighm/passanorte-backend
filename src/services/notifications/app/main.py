@@ -15,7 +15,8 @@ def create_test_app() -> FastAPI:
         routers=[notifications.router],
         consumers=[
             ConsumerSpec(
-                service="notifications", routing_key="notification.dispatch", handler=dispatcher.handle_dispatch
+                service="notifications", routing_key="notification.dispatch",
+                handler=dispatcher.apply_dispatch, transactional=True,
             ),
         ],
     )

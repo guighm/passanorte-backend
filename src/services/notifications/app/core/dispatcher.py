@@ -62,7 +62,7 @@ def apply_dispatch(db: Session, payload: dict) -> dict:
             )
         )
         notified += 1
-    db.commit()
+    db.flush()
     log_event(logger, "dispatch_done", kind=kind, source_id=source_id, notified=notified)
     return {"notified": notified}
 
@@ -71,5 +71,6 @@ def handle_dispatch(data: dict) -> None:
     db = service_session_factory()()
     try:
         apply_dispatch(db, data)
+        db.commit()
     finally:
         db.close()
